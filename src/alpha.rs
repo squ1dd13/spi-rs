@@ -3,7 +3,7 @@
 use crate::{
     bits::ContextBitReader,
     decoder::SliceGeometry,
-    entropy::{CoefficientHistory, ComponentRequest, decode_contextual_component},
+    entropy::{CallbackKind, CoefficientHistory, ComponentRequest, decode_contextual_component},
     error::{CoefficientError, DecodeError, ErrorContext, SyntaxError},
     format::Record,
     prediction::{
@@ -279,9 +279,9 @@ fn construct_refs(
     stride: usize,
     x: usize,
     y: usize,
-) -> Result<([u8; 33], [u8; 33]), DecodeError> {
-    let mut left = [0u8; 33];
-    let mut top = [0u8; 33];
+    mut left: &mut [u8; 33],
+    mut top: &mut [u8; 33],
+) -> Result<(), DecodeError> {
     let origin = y
         .checked_mul(stride)
         .and_then(|v| v.checked_add(x))
@@ -315,8 +315,8 @@ fn construct_refs(
     match width {
         4 => match selector {
             0 => {
-                left = *left_bank;
-                top = *top_bank;
+                *left = *left_bank;
+                *top = *top_bank;
             }
             1 => {
                 top[..9].copy_from_slice(&top_bank[4..13]);
@@ -376,8 +376,8 @@ fn construct_refs(
         },
         8 => match selector {
             0 => {
-                left = *left_bank;
-                top = *top_bank;
+                *left = *left_bank;
+                *top = *top_bank;
             }
             1 => {
                 top[..17].copy_from_slice(&top_bank[8..25]);
@@ -398,12 +398,12 @@ fn construct_refs(
             _ => return Err(invalid("invalid width-eight reference selector")),
         },
         16 => {
-            left = *left_bank;
-            top = *top_bank;
+            *left = *left_bank;
+            *top = *top_bank;
         }
         _ => return Err(invalid("invalid component width")),
     }
-    Ok((left, top))
+    Ok(())
 }
 
 fn predict(
@@ -583,7 +583,7 @@ fn predict(
 fn apply_component(
     width: usize,
     mode: u8,
-    _full: bool,
+    callback: CallbackKind,
     coeff: &[i16; 256],
     prediction: &[u8; 256],
     output: &mut [u8; 256],
@@ -605,7 +605,12 @@ fn apply_component(
         }
     }
     for i in 0..width * width {
-        output[i] = (i32::from(prediction[i]) + i32::from(values[i])).clamp(0, 255) as u8;
+        let residual = if callback == CallbackKind::Inactive {
+            0
+        } else {
+            i32::from(values[i])
+        };
+        output[i] = (i32::from(prediction[i]) + residual).clamp(0, 255) as u8;
     }
 }
 
@@ -785,6 +790,10 @@ pub(crate) fn decode_slice(
                             )
                         })?;
                         let width = usize::from(component.width);
+                        // Constructors may write only part of each side. Their
+                        // remaining samples persist across slots in one argument.
+                        let mut left = [0u8; 33];
+                        let mut top = [0u8; 33];
                         for slot in 0..component.count {
                             let base_x = dst_x
                                 + (argument as usize & 1) * 8
@@ -797,7 +806,7 @@ pub(crate) fn decode_slice(
                             } else {
                                 argument as usize
                             };
-                            let (left, top) = construct_refs(
+                            construct_refs(
                                 width,
                                 selector,
                                 &state.left_bank,
@@ -806,6 +815,8 @@ pub(crate) fn decode_slice(
                                 stride,
                                 base_x,
                                 base_y,
+                                &mut left,
+                                &mut top,
                             )
                             .map_err(|e| at(e, record, block, reader.logical_bit()))?;
                             let mut pred = [0u8; 256];
@@ -815,7 +826,7 @@ pub(crate) fn decode_slice(
                             apply_component(
                                 width,
                                 component.modes[slot],
-                                component.callback_full_transform[slot],
+                                component.callbacks[slot],
                                 &component.values[slot],
                                 &pred,
                                 &mut reconstructed,

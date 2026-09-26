@@ -21,7 +21,7 @@ fn round_shift(value: i64, shift: u32) -> i32 {
     ((value + (1_i64 << (shift - 1))) >> shift) as i32
 }
 
-/// Apply the recovered separable 16 by 16 inverse transform.
+/// Apply the separable 16 by 16 inverse transform.
 pub fn inverse_transform_16x16(
     coefficients: &[i16],
     transform_scale: i16,
@@ -109,6 +109,9 @@ const W4: [i16; 16] = [
 ];
 const A4: [i16; 16] = [
     160, 208, 160, 208, 208, 256, 208, 256, 160, 208, 160, 208, 208, 256, 208, 256,
+];
+const CALLBACK7_W4: [i16; 16] = [
+    144, 184, 144, 184, 184, 232, 184, 232, 144, 184, 144, 184, 184, 232, 184, 232,
 ];
 const W8: [i16; 64] = [
     576, 544, 736, 544, 576, 544, 736, 544, 544, 512, 688, 512, 544, 512, 688, 512, 736, 688, 928,
@@ -214,7 +217,7 @@ fn transform8(values: &mut [i16], callback: u8) {
 }
 
 /// Reconstruct one component's callback slots into a row-major packed output.
-/// Each slot occupies `width * width` samples. Callback 7 has the recovered 4x4 path.
+/// Each slot occupies `width * width` samples. Callback 7 uses a dedicated 4 by 4 path.
 pub fn reconstruct_component_residual(
     width: usize,
     count: usize,
@@ -241,7 +244,11 @@ pub fn reconstruct_component_residual(
         let mut v = [0_i16; 64];
         v[..slot_len].copy_from_slice(&coefficients[slot][..slot_len]);
         if width == 4 && mode == 7 {
-            let weights = if alternate_profile { &A4 } else { &W4 };
+            let weights = if alternate_profile {
+                &A4
+            } else {
+                &CALLBACK7_W4
+            };
             let mut q = [0_i16; 16];
             for i in 0..16 {
                 q[i] = truncate_signed_halfword(
@@ -279,23 +286,31 @@ pub fn reconstruct_component_residual(
             }
             continue;
         }
-        let weights = if width == 4 {
+        let weights = if width == 4 && alternate_profile {
+            &A4[..]
+        } else if width == 4 {
             &W4[..]
         } else if alternate_profile {
             &A8[..]
         } else {
             &W8[..]
         };
-        let shift = if width == 4 {
-            1
-        } else if alternate_profile {
-            2
+        if width == 4 && alternate_profile {
+            for i in 0..slot_len {
+                v[i] = (i32::from(weights[i]) * i32::from(v[i])) as i16;
+            }
         } else {
-            3
-        };
-        let round = 1_i32 << (shift - 1);
-        for i in 0..slot_len {
-            v[i] = ((round + i32::from(weights[i]) * i32::from(v[i])) >> shift) as i16;
+            let shift = if width == 4 {
+                1
+            } else if alternate_profile {
+                2
+            } else {
+                3
+            };
+            let round = 1_i32 << (shift - 1);
+            for i in 0..slot_len {
+                v[i] = ((round + i32::from(weights[i]) * i32::from(v[i])) >> shift) as i16;
+            }
         }
         if width == 4 {
             transform4(&mut v[..16], mode)
@@ -337,5 +352,25 @@ mod tests {
     #[test]
     fn signed_narrowing_wraps() {
         assert_eq!(truncate_signed_halfword(0x1_ffff), -1);
+    }
+
+    #[test]
+    fn callback7_normal_profile_uses_144_dc_weight() {
+        let mut coefficients = [[0_i16; 64]; 4];
+        coefficients[0][0] = 1;
+        let mut output = [0_i16; 16];
+        reconstruct_component_residual(4, 1, &coefficients, &[7, 0, 0, 0], false, &mut output)
+            .unwrap();
+        assert_eq!(output, [2_i16; 16]);
+    }
+
+    #[test]
+    fn alternate_width4_generic_path_multiplies_without_rounding_shift() {
+        let mut coefficients = [[0_i16; 64]; 4];
+        coefficients[0][0] = 1;
+        let mut output = [0_i16; 16];
+        reconstruct_component_residual(4, 1, &coefficients, &[1, 0, 0, 0], true, &mut output)
+            .unwrap();
+        assert_eq!(output, [3_i16; 16]);
     }
 }

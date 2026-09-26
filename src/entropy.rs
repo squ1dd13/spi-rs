@@ -772,11 +772,10 @@ fn read_context_history_symbol(
                 reader.accumulator = lz(accumulator2, 4);
                 reader.available = available2 - 4;
             }
-            let raw = output & 0xff;
-            if raw > 1 || u32::from(mode) <= raw {
+            if output & 0xff > 1 || u32::from(mode) <= (output & 0xff) {
                 output += 1;
             }
-            if raw > 1 && mode != 2 && u32::from(mode) <= raw {
+            if output & 0xff > 1 && mode != 2 && u32::from(mode) <= (output & 0xff) {
                 output += 1;
             }
         } else {
@@ -828,12 +827,19 @@ pub(crate) struct ComponentRequest {
     pub width_selector_already_read: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallbackKind {
+    Inactive,
+    ConstantResidual,
+    FullBlockTransform,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComponentResult {
     pub width: u8,
     pub count: usize,
     pub modes: [u8; 4],
-    pub callback_full_transform: [bool; 4],
+    pub callbacks: [CallbackKind; 4],
     pub scan_variants: [u8; 4],
     pub values: [[i16; 256]; 4],
 }
@@ -922,7 +928,7 @@ pub(crate) fn decode_contextual_component(
         width,
         count: component_count,
         modes: [0; 4],
-        callback_full_transform: [false; 4],
+        callbacks: [CallbackKind::Inactive; 4],
         scan_variants: [0; 4],
         values: [[0; 256]; 4],
     };
@@ -939,7 +945,11 @@ pub(crate) fn decode_contextual_component(
                 decode_scanned_coefficient(reader, 8, 16, 0, &mut cursor, true)?;
             result.values[0][position as usize] = value;
         }
-        result.callback_full_transform[0] = !(count == 1 && cursor == 1);
+        result.callbacks[0] = if count == 1 && cursor == 1 {
+            CallbackKind::ConstantResidual
+        } else {
+            CallbackKind::FullBlockTransform
+        };
         return Ok(result);
     }
 
@@ -997,7 +1007,11 @@ pub(crate) fn decode_contextual_component(
             )?;
             result.values[slot][position as usize] = value;
         }
-        result.callback_full_transform[slot] = !(coefficient_count == 1 && cursor == 1);
+        result.callbacks[slot] = if coefficient_count == 1 && cursor == 1 {
+            CallbackKind::ConstantResidual
+        } else {
+            CallbackKind::FullBlockTransform
+        };
     }
     Ok(result)
 }

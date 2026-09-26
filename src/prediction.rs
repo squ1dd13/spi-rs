@@ -455,7 +455,7 @@ pub fn predict_signed_left_edge_directional(
     Ok(())
 }
 
-/// Recovered width-four angular callback for modes 5, 6, and 7.
+/// Width-four angular prediction for modes 5, 6, and 7.
 pub fn predict_signed_width4_angular(
     top: &[i16; 33],
     mode: u8,
@@ -711,7 +711,7 @@ pub fn predict_signed_side_directional(
     Ok(())
 }
 
-/// Predict one signed angular mode from the recovered direction table.
+/// Predict one signed angular mode from the direction table.
 pub fn predict_signed_angular(
     left: &[i16; 33],
     top: &[i16; 33],
