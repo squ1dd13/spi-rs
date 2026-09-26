@@ -477,7 +477,7 @@ pub fn predict_signed_width4_angular(
         for i in 0..17 {
             main[ORIGIN as usize + i + 1] = l[i + 1];
         }
-        for index in -1_i32..=-16 {
+        for index in (-16_i32..=-1).rev() {
             let side_index = (((-index * 630 + 128) >> 8) as usize)
                 .saturating_sub(1)
                 .min(16);
@@ -748,7 +748,11 @@ pub fn predict_signed_angular(
         let mut sum = 128_i32;
         for i in 1..=width {
             sum += INV[ai];
-            refs[(origin - i as i32) as usize] = side[(sum >> 8) as usize];
+            // Large inverse angles can project past the persistent 33-sample
+            // side history even when the predictor never consumes that far.
+            // Extend by repeating the final available sample.
+            let side_index = ((sum >> 8) as usize).min(side.len() - 1);
+            refs[(origin - i as i32) as usize] = side[side_index];
         }
     }
     for r in 0..width {
@@ -869,6 +873,15 @@ mod tests {
         predict_signed_left_edge_directional(&left, &top, 8, &mut out).unwrap();
         assert_eq!(out[0], 59);
         assert_eq!(out[7 * 8], 100);
+    }
+
+    #[test]
+    fn angular_inverse_reference_extends_past_history_without_panicking() {
+        let left = [100_i16; 33];
+        let top = [0_i16; 33];
+        let mut out = [0_i16; 256];
+        predict_signed_angular(&left, &top, 16, 4, &mut out).unwrap();
+        assert_eq!(out[15 * 16], 100);
     }
 
     #[test]
