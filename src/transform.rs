@@ -1,10 +1,14 @@
 //! Integer coefficient reconstruction primitives.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransformError {
+    #[error("invalid transform block width")]
     InvalidWidth,
+    #[error("invalid transform coefficient slot count")]
     InvalidCount,
+    #[error("unsupported transform callback")]
     InvalidCallback,
+    #[error("transform buffer is too small")]
     BufferTooSmall,
 }
 

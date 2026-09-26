@@ -1,10 +1,14 @@
 //! Reference construction and integer intra prediction.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PredictionError {
+    #[error("invalid prediction block width")]
     InvalidWidth,
+    #[error("unsupported prediction mode")]
     InvalidMode,
+    #[error("prediction reference is out of bounds")]
     OutOfBounds,
+    #[error("prediction output buffer is too small")]
     BufferTooSmall,
 }
 
@@ -337,6 +341,210 @@ impl Default for SignedReferences {
     }
 }
 
+/// Copy the persistent histories into the constructor layout used by planar prediction.
+pub fn build_signed_references(
+    left_history: &[i16; 33],
+    top_history: &[i16; 33],
+) -> SignedReferences {
+    let mut refs = SignedReferences::default();
+    refs.left[..32].copy_from_slice(&left_history[1..]);
+    refs.top[..32].copy_from_slice(&top_history[1..]);
+    refs
+}
+
+/// Signed angular Reference A. Width four uses the observed shortened inverse
+/// extension; larger widths use their corresponding 630-angle extension.
+pub fn predict_signed_wide_angular_reference_a(
+    filtered_left: &[i16; 33],
+    filtered_top: &[i16; 33],
+    width: usize,
+    output: &mut [i16],
+) -> Result<(), PredictionError> {
+    if !valid_width(width) {
+        return Err(PredictionError::InvalidWidth);
+    }
+    if output.len() < width * width {
+        return Err(PredictionError::BufferTooSmall);
+    }
+    let mut main = [0_i16; 65];
+    const ORIGIN: i32 = 32;
+    for i in 0..33 {
+        main[(ORIGIN + i as i32) as usize] = filtered_top[i];
+    }
+    let last_negative = match width {
+        4 => -2,
+        8 => -3,
+        _ => -6,
+    };
+    let mut inverse_sum = 128_i32;
+    for offset in 1..=(-last_negative) {
+        let index = -offset;
+        inverse_sum += 630;
+        main[(ORIGIN + index) as usize] = filtered_left[(inverse_sum >> 8) as usize];
+    }
+    for row in 0..width {
+        let displacement = -((row as i32 + 1) * 13);
+        let integer = displacement >> 5;
+        let fraction = displacement & 31;
+        for col in 0..width {
+            let first = ORIGIN + col as i32 + integer + 1;
+            let value = (32 - fraction) * i32::from(main[first as usize])
+                + fraction * i32::from(main[first as usize + 1])
+                + 16;
+            output[row * width + col] = (value >> 5) as i16;
+        }
+    }
+    Ok(())
+}
+
+pub fn predict_signed_top_edge_directional_signed(
+    filtered_top: &[i16; 33],
+    width: usize,
+    output: &mut [i16],
+) -> Result<(), PredictionError> {
+    if !valid_width(width) {
+        return Err(PredictionError::InvalidWidth);
+    }
+    if output.len() < width * width {
+        return Err(PredictionError::BufferTooSmall);
+    }
+    for row in 0..width {
+        for col in 0..width {
+            output[row * width + col] = filtered_top[row + col + 2];
+        }
+    }
+    Ok(())
+}
+
+pub fn predict_signed_left_edge_directional(
+    filtered_left: &[i16; 33],
+    filtered_top: &[i16; 33],
+    width: usize,
+    output: &mut [i16],
+) -> Result<(), PredictionError> {
+    if width != 8 && width != 16 {
+        return Err(PredictionError::InvalidWidth);
+    }
+    if output.len() < width * width {
+        return Err(PredictionError::BufferTooSmall);
+    }
+    const ORIGIN: i32 = 32;
+    let mut main = [0_i16; 65];
+    main[ORIGIN as usize] = filtered_top[0];
+    for i in 0..32 {
+        main[ORIGIN as usize + i + 1] = filtered_left[i + 1];
+    }
+    for index in -(width as i32)..0 {
+        let side_index = (((-index * 630 + 128) >> 8) as usize)
+            .saturating_sub(1)
+            .min(31);
+        main[(ORIGIN + index) as usize] = filtered_top[side_index + 1];
+    }
+    for row in 0..width {
+        for col in 0..width {
+            let displacement = -((col as i32 + 1) * 13);
+            let integer = -((-displacement + 31) / 32);
+            let fraction = displacement - integer * 32;
+            let first = ORIGIN + row as i32 + integer + 1;
+            let value = (32 - fraction) * i32::from(main[first as usize])
+                + fraction * i32::from(main[first as usize + 1])
+                + 16;
+            output[row * width + col] = (value >> 5) as i16;
+        }
+    }
+    Ok(())
+}
+
+/// Recovered width-four angular callback for modes 5, 6, and 7.
+pub fn predict_signed_width4_angular(
+    top: &[i16; 33],
+    mode: u8,
+    left: Option<&[i16; 33]>,
+    output: &mut [i16],
+) -> Result<(), PredictionError> {
+    if output.len() < 16 {
+        return Err(PredictionError::BufferTooSmall);
+    }
+    if !matches!(mode, 5 | 6 | 7) || (mode == 7 && left.is_none()) {
+        return Err(PredictionError::InvalidMode);
+    }
+    let left = left;
+    let mut main = [0_i16; 34];
+    if mode == 7 {
+        let l = left.expect("validated above");
+        const ORIGIN: i32 = 16;
+        main[ORIGIN as usize] = l[0];
+        for i in 0..17 {
+            main[ORIGIN as usize + i + 1] = l[i + 1];
+        }
+        for index in -1_i32..=-16 {
+            let side_index = (((-index * 630 + 128) >> 8) as usize)
+                .saturating_sub(1)
+                .min(16);
+            main[(ORIGIN + index) as usize] = top[side_index + 1];
+        }
+    }
+    for row in 0..4 {
+        for col in 0..4 {
+            let value = if mode == 5 {
+                let displacement = (row + 1) * 13;
+                let reference = col + (displacement >> 5);
+                let fraction = displacement & 31;
+                ((32 - fraction) as i32 * i32::from(top[reference + 1])
+                    + fraction as i32 * i32::from(top[reference + 2])
+                    + 16)
+                    >> 5
+            } else if mode == 6 {
+                let reference = col + row;
+                if reference >= 6 {
+                    i32::from(top[8])
+                } else {
+                    (i32::from(top[reference + 1])
+                        + 2 * i32::from(top[reference + 2])
+                        + i32::from(top[reference + 3])
+                        + 2)
+                        >> 2
+                }
+            } else {
+                const ORIGIN: i32 = 16;
+                let displacement = -((col as i32 + 1) * 13);
+                let integer = -((-displacement + 31) / 32);
+                let fraction = displacement - integer * 32;
+                let first = ORIGIN + row as i32 + integer + 1;
+                ((32 - fraction) * i32::from(main[first as usize])
+                    + fraction * i32::from(main[first as usize + 1])
+                    + 16)
+                    >> 5
+            };
+            output[row * 4 + col] = value as i16;
+        }
+    }
+    Ok(())
+}
+
+/// The width-four diagonal callback uses the left corner on the diagonal.
+pub fn predict_signed_width4_diagonal(
+    filtered_left: &[i16; 33],
+    filtered_top: &[i16; 33],
+    output: &mut [i16],
+) -> Result<(), PredictionError> {
+    if output.len() < 16 {
+        return Err(PredictionError::BufferTooSmall);
+    }
+    for row in 0..4 {
+        for col in 0..4 {
+            output[row * 4 + col] = if col > row {
+                filtered_top[col - row]
+            } else if row > col {
+                filtered_left[row - col]
+            } else {
+                filtered_left[0]
+            };
+        }
+    }
+    Ok(())
+}
+
 pub fn filter_signed_references(
     left: &[i16; 33],
     top: &[i16; 33],
@@ -620,5 +828,56 @@ mod tests {
             build_prediction_references(&[0; 15], 4, 0, 0, 4, false, 0),
             Err(PredictionError::OutOfBounds)
         ));
+    }
+
+    #[test]
+    fn width4_angular_callbacks_have_fixed_vectors() {
+        let top = core::array::from_fn(|i| (i * 10) as i16);
+        let left = [100_i16; 33];
+        let mut out = [0_i16; 16];
+        predict_signed_width4_angular(&top, 5, None, &mut out).unwrap();
+        assert_eq!(out[0], 14);
+        predict_signed_width4_angular(&top, 6, None, &mut out).unwrap();
+        assert_eq!(out[0], 20);
+        assert_eq!(out[15], 80);
+        predict_signed_width4_angular(&[0; 33], 7, Some(&left), &mut out).unwrap();
+        assert_eq!(out[0], 100);
+        assert_eq!(out[3], 38);
+    }
+
+    #[test]
+    fn signed_reference_a_and_top_edge_keep_halfword_values() {
+        let left = [100_i16; 33];
+        let top = [0_i16; 33];
+        let mut out = [0_i16; 64];
+        predict_signed_wide_angular_reference_a(&left, &top, 8, &mut out).unwrap();
+        assert_eq!(out[0], 0);
+        assert_eq!(out[7 * 8], 100);
+        let ramp = core::array::from_fn(|i| (i as i16) * 10);
+        predict_signed_top_edge_directional_signed(&ramp, 8, &mut out).unwrap();
+        assert_eq!(out[0], 20);
+        assert_eq!(out[7 * 8 + 7], 160);
+        predict_signed_top_edge_directional_signed(&ramp, 4, &mut out).unwrap();
+        assert_eq!(out[15], 80);
+    }
+
+    #[test]
+    fn signed_left_edge_directional_interpolates_without_clipping() {
+        let left = [100_i16; 33];
+        let top = [0_i16; 33];
+        let mut out = [0_i16; 64];
+        predict_signed_left_edge_directional(&left, &top, 8, &mut out).unwrap();
+        assert_eq!(out[0], 59);
+        assert_eq!(out[7 * 8], 100);
+    }
+
+    #[test]
+    fn signed_constructor_drops_corner_history_entry() {
+        let left = core::array::from_fn(|i| i as i16);
+        let top = core::array::from_fn(|i| (100 + i) as i16);
+        let refs = build_signed_references(&left, &top);
+        assert_eq!(refs.left[0], 1);
+        assert_eq!(refs.top[0], 101);
+        assert_eq!(refs.left[31], 32);
     }
 }

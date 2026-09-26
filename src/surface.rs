@@ -1,9 +1,12 @@
 //! Checked plane access and 16 by 16 motion copies.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SurfaceError {
+    #[error("invalid plane dimensions")]
     InvalidDimensions,
+    #[error("plane access is out of bounds")]
     OutOfBounds,
+    #[error("plane buffer is too small")]
     BufferTooSmall,
 }
 
