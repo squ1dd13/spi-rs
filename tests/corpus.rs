@@ -364,4 +364,10 @@ mod validation_tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn missing_listed_input_is_an_error() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        assert!(resolve_input(&root, Path::new("absent-corpus-case.spi")).is_err());
+    }
 }

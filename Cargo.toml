@@ -3,6 +3,7 @@ name = "spi"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Native SPI image decoder"
 exclude = ["tests/local-corpus/**", ".codex/**"]
 
 [features]
