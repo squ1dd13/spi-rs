@@ -3,7 +3,7 @@ name = "spi"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-exclude = ["tests/local-corpus/**"]
+exclude = ["tests/local-corpus/**", ".codex/**"]
 
 [features]
 default = ["cli"]
