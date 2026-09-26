@@ -847,6 +847,8 @@ mod tests {
         predict_signed_width4_angular(&[0; 33], 7, Some(&left), &mut out).unwrap();
         assert_eq!(out[0], 100);
         assert_eq!(out[3], 38);
+        predict_signed_width4_angular(&top, 7, Some(&left), &mut out).unwrap();
+        assert_eq!(out[3], 50);
     }
 
     #[test]

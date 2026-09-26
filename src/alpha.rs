@@ -4,11 +4,12 @@ use crate::{
     bits::ContextBitReader,
     decoder::SliceGeometry,
     entropy::{CoefficientHistory, ComponentRequest, decode_contextual_component},
-    error::{DecodeError, ErrorContext, SyntaxError},
+    error::{CoefficientError, DecodeError, ErrorContext, SyntaxError},
     format::Record,
     prediction::{
-        SignedReferences, filter_signed_references, predict_signed_angular, predict_signed_dc,
-        predict_signed_planar, prediction_direction_for_mode,
+        PredictionReferences, SignedReferences, filter_signed_references, predict_alpha,
+        predict_signed_angular, predict_signed_dc, predict_signed_planar,
+        prediction_direction_for_mode,
     },
     surface::{Motion, copy_alpha_motion, copy_block16},
 };
@@ -412,6 +413,19 @@ fn predict(
     mode: u8,
     out: &mut [u8; 256],
 ) -> Result<(), DecodeError> {
+    if width == 4 && ((mode <= 8 && mode != 3) || mode == 17) {
+        let mut references = PredictionReferences::default();
+        references.top_left = if mode == 4 { top_u8[0] } else { left_u8[0] };
+        references.left[..8].copy_from_slice(&left_u8[1..9]);
+        references.top[..8].copy_from_slice(&top_u8[1..9]);
+        let last_left = references.left[7];
+        let last_top = references.top[7];
+        references.left[8..].fill(last_left);
+        references.top[8..].fill(last_top);
+        predict_alpha(&references, width, mode, &mut out[..width * width], false)
+            .map_err(|_| invalid("width-four alpha prediction failed"))?;
+        return Ok(());
+    }
     let mut left = [0i16; 33];
     let mut top = [0i16; 33];
     for i in 0..=2 * width {
@@ -760,12 +774,14 @@ pub(crate) fn decode_slice(
                                 width_selector_already_read: false,
                             },
                         )
-                        .map_err(|_| {
-                            at(
-                                invalid("invalid predictive transform coefficients"),
-                                record,
-                                block,
-                                reader.logical_bit(),
+                        .map_err(|error| {
+                            DecodeError::Coefficients(CoefficientError::Syntax(Box::new(error))).at(
+                                ErrorContext {
+                                    record: Some(usize::from(record.index)),
+                                    block: Some(block),
+                                    component: Some(argument as usize),
+                                    bit_position: Some(reader.logical_bit()),
+                                },
                             )
                         })?;
                         let width = usize::from(component.width);

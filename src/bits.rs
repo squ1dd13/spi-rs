@@ -151,7 +151,11 @@ impl<'a> ContextBitReader<'a> {
             } else {
                 (result << take) | fragment
             };
-            self.accumulator = self.accumulator.wrapping_shl(take);
+            self.accumulator = if take == 32 {
+                0
+            } else {
+                self.accumulator << take
+            };
             self.available -= take;
             remaining -= take;
         }

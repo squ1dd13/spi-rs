@@ -116,7 +116,7 @@ fn lz(value: u32, shift: u32) -> u32 {
 }
 
 fn leading_zeroes(value: u8) -> u32 {
-    value.leading_zeros() - 24
+    value.leading_zeros()
 }
 
 /// Decode the width of the contextual Exp-Golomb prefix using the format's
@@ -753,17 +753,18 @@ fn read_context_history_symbol(
             return Err(EntropyError::InvalidCode);
         }
         let accumulator1 = reader.accumulator;
+        let available1 = reader.available;
         reader.accumulator = lz(accumulator1, 1);
         reader.available -= 1;
         if accumulator1 & 0x8000_0000 == 0 {
             let accumulator2 = reader.accumulator;
             let available2 = reader.available;
-            if available2 < 5 {
+            if available1 < 5 {
                 if !reader.refill(4) {
                     return Err(EntropyError::InvalidCode);
                 }
-                output = (reader.accumulator >> (available2 + 27)) | (accumulator2 >> 28);
-                let shift = 5 - available2;
+                output = (reader.accumulator >> (available1 + 27)) | (accumulator2 >> 28);
+                let shift = 5 - available1;
                 reader.accumulator = lz(reader.accumulator, shift);
                 reader.available -= shift;
             } else {
@@ -900,7 +901,7 @@ pub(crate) fn decode_contextual_component(
         base + history.stride + 1,
     ];
     let mut modes = [0; 4];
-    if width == 16 {
+    if request.fixed_width == 16 {
         if !reader.read_bits(7) {
             return Err(EntropyError::InvalidCode);
         }
@@ -925,8 +926,8 @@ pub(crate) fn decode_contextual_component(
         scan_variants: [0; 4],
         values: [[0; 256]; 4],
     };
-    result.modes[..component_count].copy_from_slice(&modes);
-    if width == 16 {
+    result.modes[..component_count].copy_from_slice(&modes[..component_count]);
+    if request.fixed_width == 16 {
         let (count_width, suffix, _) = read_context_index(reader)?;
         if count_width >= 31 {
             return Err(EntropyError::InvalidCode);
@@ -1008,7 +1009,7 @@ mod tests {
     #[test]
     fn rle_consumes_literal_after_terminal_repetition() {
         // Two literal 5s, then a run of one 5, followed by the required literal 7.
-        let mut bits = crate::bits::BitReader::new(&[0b0101_0101, 0b0010_1110]);
+        let mut bits = crate::bits::BitReader::new(&[0b0101_0101, 0b0100_1110]);
         let mut output = [0; 3];
         let logical = decode_rle_plane(&mut bits, &mut output, 3).unwrap();
         assert_eq!(logical, 4);
