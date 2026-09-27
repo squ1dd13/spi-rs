@@ -74,13 +74,17 @@ pub fn build_prediction_references(
     if rows < y.saturating_add(width) {
         return Err(PredictionError::OutOfBounds);
     }
-    let mut r = PredictionReferences::default();
-    r.first_row = y == 0;
-    r.top_left = if x == 0 || y == 0 {
-        128
-    } else {
-        plane[(y - 1) * stride + x - 1]
+
+    let mut r = PredictionReferences {
+        first_row: y == 0,
+        top_left: if x == 0 || y == 0 {
+            128
+        } else {
+            plane[(y - 1) * stride + x - 1]
+        },
+        ..Default::default()
     };
+
     if repeat_first_row_edge && y == 0 && x != 0 {
         let edge = plane[x - 1];
         r.top_left = edge;
@@ -95,16 +99,16 @@ pub fn build_prediction_references(
     }
     let block_x = (x / 16) * 16;
     let block_y = (y / 16) * 16;
-    let top_limit = if y % 16 == 0 {
+    let top_limit = if y.is_multiple_of(16) {
         stride - 1
     } else if width == 4 && y % 8 == 4 {
         ((x / 8) * 8 + 7).min(stride - 1)
     } else {
         block_x.saturating_add(15).min(stride - 1)
     };
-    let left_limit = if width == 4 && x % 8 == 0 {
+    let left_limit = if width == 4 && x.is_multiple_of(8) {
         ((y / 8) * 8 + 7).min(rows - 1)
-    } else if x % 16 == 0 {
+    } else if x.is_multiple_of(16) {
         block_y.saturating_add(15).min(rows - 1)
     } else {
         (y + width - 1).min(rows - 1)
@@ -510,10 +514,9 @@ pub fn predict_signed_width4_angular(
     if output.len() < 16 {
         return Err(PredictionError::BufferTooSmall);
     }
-    if !matches!(mode, 5 | 6 | 7) || (mode == 7 && left.is_none()) {
+    if !matches!(mode, 5..=7) || (mode == 7 && left.is_none()) {
         return Err(PredictionError::InvalidMode);
     }
-    let left = left;
     let mut main = [0_i16; 34];
     if mode == 7 {
         let l = left.expect("validated above");
