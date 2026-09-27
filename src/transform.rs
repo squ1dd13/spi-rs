@@ -11,19 +11,28 @@ pub enum TransformError {
 }
 
 /// Wrap an integer to a signed 16-bit value, matching a narrowing halfword cast.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the coefficient format keeps the low signed halfword"
+)]
 pub fn truncate_signed_halfword(value: u32) -> i16 {
-    let bytes = value.to_le_bytes();
-    i16::from_le_bytes([bytes[0], bytes[1]])
+    value as i16
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "intermediate coefficients wrap to a signed halfword"
+)]
 fn truncate_i32(value: i32) -> i16 {
-    let bytes = value.to_le_bytes();
-    i16::from_le_bytes([bytes[0], bytes[1]])
+    value as i16
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the rounded transform result wraps to a signed word"
+)]
 fn round_shift(value: i64, shift: u32) -> i32 {
-    let bytes = ((value + (1_i64 << (shift - 1))) >> shift).to_le_bytes();
-    i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    ((value + (1_i64 << (shift - 1))) >> shift) as i32
 }
 
 /// Apply the separable 16 by 16 inverse transform.
@@ -368,6 +377,9 @@ mod tests {
     #[test]
     fn signed_narrowing_wraps() {
         assert_eq!(truncate_signed_halfword(0x1_ffff), -1);
+        assert_eq!(truncate_i32(0x1_8000), i16::MIN);
+        assert_eq!(round_shift(i64::from(i32::MAX) + 1, 1), 0x4000_0000);
+        assert_eq!(round_shift((i64::from(i32::MAX) + 1) * 2, 1), i32::MIN);
     }
 
     #[test]

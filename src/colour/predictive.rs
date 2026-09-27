@@ -22,8 +22,13 @@ use crate::{
     },
 };
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel reconstruction keeps the low eight bits"
+)]
 fn low_byte(value: i16) -> u8 {
-    value.to_le_bytes()[0]
+    value as u8
 }
 
 struct PlaneRequest {

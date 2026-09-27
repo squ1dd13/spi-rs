@@ -2,8 +2,12 @@ use thiserror::Error;
 
 use crate::bits::ContextBitReader;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "only the low eight bits form the decoded byte"
+)]
 fn low_byte(value: u32) -> u8 {
-    value.to_le_bytes()[0]
+    value as u8
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

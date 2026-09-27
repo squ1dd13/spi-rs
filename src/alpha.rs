@@ -744,10 +744,8 @@ fn decode_alpha_predictive(
             history,
             ComponentRequest {
                 argument,
-                horizontal_offset: {
-                    let bytes = (block_x * 16).to_le_bytes();
-                    u16::from_le_bytes([bytes[0], bytes[1]])
-                },
+                horizontal_offset: u16::try_from(block_x * 16)
+                    .map_err(|_| invalid("predictive block offset overflow"))?,
                 maximum_width: 8,
                 fixed_width: 0,
                 colour_long_symbols: false,
