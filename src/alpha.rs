@@ -453,12 +453,10 @@ fn alpha_signed_four(
     let mut main = [0_i16; 65];
     main[32..65].copy_from_slice(t);
     let mut sum = 128;
-    let last = if width == 4 {
-        -2
-    } else if width == 8 {
-        -3
-    } else {
-        -6
+    let last = match width {
+        4 => -2,
+        8 => -3,
+        _ => -6,
     };
     for i in (last as isize..=-1_isize).rev() {
         sum += 630;
