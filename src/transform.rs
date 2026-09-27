@@ -1,8 +1,18 @@
 //! Convert colour coefficients into residual samples.
 //!
-//! A coefficient is a coded weight for a spatial pattern. The coefficient at position zero is the DC coefficient: it supplies a constant contribution across the square. Dequantisation here means multiplication by selected integer weights, with the shifts and narrowing listed below. An inverse transform combines those patterns to obtain a residual at each sample position. Colour reconstruction adds this residual to a prediction, then clips the component value. This module produces signed residuals only; it does not add predictions, convert colour channels, or process predictive alpha.
+//! A coefficient is a coded weight for a spatial pattern. The coefficient at position zero is the
+//! DC coefficient: it supplies a constant contribution across the square. Dequantisation here
+//! means multiplication by selected integer weights, with the shifts and narrowing listed below.
+//! An inverse transform combines those patterns to obtain a residual at each sample position.
+//! Colour reconstruction adds this residual to a prediction, then clips the component value. This
+//! module produces signed residuals only; it does not add predictions, convert colour channels, or
+//! process predictive alpha.
 //!
-//! Coefficient and residual arrays use row-major squares. Widths 4 and 8 have up to four packed slots; slot `s` occupies `s*w*w..(s+1)*w*w` in output. Width 16 has a separate 256-value function. A callback selector identifies inactive, constant-only, or full-transform reconstruction. It is an integer choice in this implementation, not a callback supplied by an API user.
+//! Coefficient and residual arrays use row-major squares. Widths 4 and 8 have up to four packed
+//! slots; slot `s` occupies `s*w*w..(s+1)*w*w` in output. Width 16 has a separate 256-value
+//! function. A callback selector identifies inactive, constant-only, or full-transform
+//! reconstruction. It is an integer choice in this implementation, not a callback supplied by an
+//! API user.
 //!
 //! # Integer stages
 //!
@@ -15,9 +25,18 @@
 //! | Width 8, alternate | `(A8[i]*c + 2) >> 2`, narrow | Same width-8 passes |
 //! | Width 16 | Matrix coefficient product times scale 144 or 160 in production | First pass `+128`, `>>8`, narrow to `i32`; second `+2048`, `>>12`, narrow to `i32` then `i16` |
 //!
-//! A separable transform performs the one-dimensional calculation on columns, then rows. Narrowing keeps low bits and interprets them as signed; it is not clipping. For example, low-halfword extraction from `0x1ffff` gives -1. Signed right shifts preserve the sign and round negative values downwards. The rounding offset is added before the shift. The selector-7 final expression instead casts to `u32`, adds 32 with wrapping, shifts logically, then narrows; retain that exact order.
+//! A separable transform performs the one-dimensional calculation on columns, then rows. Narrowing
+//! keeps low bits and interprets them as signed; it is not clipping. For example, low-halfword
+//! extraction from `0x1ffff` gives -1. Signed right shifts preserve the sign and round negative
+//! values downwards. The rounding offset is added before the shift. The selector-7 final
+//! expression instead casts to `u32`, adds 32 with wrapping, shifts logically, then narrows;
+//! retain that exact order.
 //!
-//! Selector 1 uses only the scaled coefficient at position zero: `(value+32)>>6` fills the slot. Normal width-4 coefficient 5 therefore produces 11 everywhere. Inactive slots leave output unchanged; colour callers initialise the workspace to zero. Width-16 active slots always use the matrix transform, including a constant-only classification. The crate page connects these residuals to prediction and final pixels.
+//! Selector 1 uses only the scaled coefficient at position zero: `(value+32)>>6` fills the slot.
+//! Normal width-4 coefficient 5 therefore produces 11 everywhere. Inactive slots leave output
+//! unchanged; colour callers initialise the workspace to zero. Width-16 active slots always use
+//! the matrix transform, including a constant-only classification. The crate page connects these
+//! residuals to prediction and final pixels.
 
 /// Invalid inverse-transform arguments.
 ///
@@ -37,7 +56,8 @@ pub enum TransformError {
 
 /// Wraps an integer to a signed 16-bit value.
 ///
-/// The implemented reconstruction keeps the low 16 bits and interprets them as signed. Values above `i16::MAX` therefore wrap rather than saturate.
+/// The implemented reconstruction keeps the low 16 bits and interprets them as signed. Values
+/// above `i16::MAX` therefore wrap rather than saturate.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the coefficient format keeps the low signed halfword"
@@ -48,7 +68,8 @@ pub fn truncate_signed_halfword(value: u32) -> i16 {
 
 /// Wraps an intermediate signed word to a signed halfword.
 ///
-/// Small inverse transforms rely on two's-complement narrowing after arithmetic stages, so this conversion wraps instead of saturating.
+/// Small inverse transforms rely on two's-complement narrowing after arithmetic stages, so this
+/// conversion wraps instead of saturating.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "intermediate coefficients wrap to a signed halfword"
@@ -59,7 +80,8 @@ fn truncate_i32(value: i32) -> i16 {
 
 /// Rounds and shifts a transform accumulator into a wrapping signed word.
 ///
-/// The caller supplies a positive shift. Adding the half-unit implements the codec's integer rounding before arithmetic right shift.
+/// The caller supplies a positive shift. Adding the half-unit implements the codec's integer
+/// rounding before arithmetic right shift.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the rounded transform result wraps to a signed word"
@@ -70,13 +92,20 @@ fn round_shift(value: i64, shift: u32) -> i32 {
 
 /// Reconstruct 256 signed residual samples from a 16 by 16 coefficient square.
 ///
-/// Input and output are row-major; only their first 256 entries participate. The fixed matrix `T[k][r]` weights coefficient row `k` for output row `r`. First calculate `sum(T[k][r]*coeff[k*16+c]*transform_scale)` in `i64`, add 128, shift arithmetically by eight, and narrow to `i32`. Then combine each intermediate row with `T[k][c]`, add 2048, shift by twelve, narrow to `i32`, then keep the signed low 16 bits. The output is not clipped.
+/// Input and output are row-major; only their first 256 entries participate. The fixed matrix
+/// `T[k][r]` weights coefficient row `k` for output row `r`. First calculate
+/// `sum(T[k][r]*coeff[k*16+c]*transform_scale)` in `i64`, add 128, shift arithmetically by eight,
+/// and narrow to `i32`. Then combine each intermediate row with `T[k][c]`, add 2048, shift by
+/// twelve, narrow to `i32`, then keep the signed low 16 bits. The output is not clipped.
 ///
-/// Colour supplies scale 144 for normal profile and 160 for alternate profile. This helper accepts any `i16` scale. With coefficient zero equal to 64, all others zero, and scale 64, every residual is 16. Inputs and output elements after 255 are unchanged.
+/// Colour supplies scale 144 for normal profile and 160 for alternate profile. This helper accepts
+/// any `i16` scale. With coefficient zero equal to 64, all others zero, and scale 64, every
+/// residual is 16. Inputs and output elements after 255 are unchanged.
 ///
 /// # Errors
 ///
-/// Returns [`TransformError::BufferTooSmall`] before writes if either slice has fewer than 256 elements.
+/// Returns [`TransformError::BufferTooSmall`] before writes if either slice has fewer than 256
+/// elements.
 pub fn inverse_transform_16x16(
     coefficients: &[i16],
     transform_scale: i16,
@@ -188,7 +217,8 @@ const A8: [i16; 64] = [
 
 /// Applies the codec's separable 4 by 4 integer transform in place.
 ///
-/// Callback 1 represents a DC-only slot and scales only the first value. Other callback values use the full transform; the caller guarantees a 16-element slice.
+/// Callback 1 represents a DC-only slot and scales only the first value. Other callback values use
+/// the full transform; the caller guarantees a 16-element slice.
 fn transform4(values: &mut [i16], callback: u8) {
     if callback == 1 {
         values[0] = truncate_i32((i32::from(values[0]) + 32) >> 6);
@@ -225,7 +255,8 @@ fn transform4(values: &mut [i16], callback: u8) {
 
 /// Applies the codec's separable 8 by 8 integer transform in place.
 ///
-/// Callback 1 represents a DC-only slot and scales only the first value. The full path adds its rounding bias before column and row passes and uses wrapping halfword intermediates.
+/// Callback 1 represents a DC-only slot and scales only the first value. The full path adds its
+/// rounding bias before column and row passes and uses wrapping halfword intermediates.
 fn transform8(values: &mut [i16], callback: u8) {
     if callback == 1 {
         values[0] = truncate_i32((i32::from(values[0]) + 32) >> 6);
@@ -233,7 +264,8 @@ fn transform8(values: &mut [i16], callback: u8) {
     }
     /// Applies one dimension of the 8-point integer transform.
     ///
-    /// `stride` and `ds` select input and output spacing. The caller provides eight accessible values in each direction; `round` enables the final six-bit scaling pass.
+    /// `stride` and `ds` select input and output spacing. The caller provides eight accessible
+    /// values in each direction; `round` enables the final six-bit scaling pass.
     fn one(src: &[i16], stride: usize, dst: &mut [i16], ds: usize, round: bool) {
         let x = [0, 1, 2, 3, 4, 5, 6, 7].map(|i| i32::from(src[i * stride]));
         let (e0, e1, e2, e3) = (
@@ -287,7 +319,9 @@ fn transform8(values: &mut [i16], callback: u8) {
 
 /// Reconstructs callback-7 coefficients into one row-major 4 by 4 slot.
 ///
-/// Callback 7 has dedicated weights and a transposed placement that differs from the generic 4 by 4 path. The fixed-size input guarantees all coefficient accesses; the caller provides at least 16 output elements.
+/// Callback 7 has dedicated weights and a transposed placement that differs from the generic 4 by
+/// 4 path. The fixed-size input guarantees all coefficient accesses; the caller provides at least
+/// 16 output elements.
 fn reconstruct_callback7(coefficients: &[i16; 64], alternate_profile: bool, output: &mut [i16]) {
     let weights = if alternate_profile {
         &A4
@@ -336,13 +370,22 @@ fn reconstruct_callback7(coefficients: &[i16; 64], alternate_profile: bool, outp
 
 /// Reconstruct packed width-4 or width-8 residual slots.
 ///
-/// `count` is 0..=4. Slot `s` reads `coefficients[s][..width*width]` in row order and writes `output[s*width*width..(s+1)*width*width]`. It does not place that square in a larger image. The colour caller places it later and supplies a zeroed workspace so inactive slots contribute zero.
+/// `count` is 0..=4. Slot `s` reads `coefficients[s][..width*width]` in row order and writes
+/// `output[s*width*width..(s+1)*width*width]`. It does not place that square in a larger image.
+/// The colour caller places it later and supplies a zeroed workspace so inactive slots contribute
+/// zero.
 ///
-/// Selector 0 leaves a slot unchanged. Selector 1 scales coefficient zero and fills the slot with its constant residual. Selector 7 at width 4 uses the dedicated weights and transform; other non-zero selectors use the generic full transform. At width 8, selector 7 also uses that generic full transform. The module table specifies profile weights, rounding, wrapping, and final transpose. All inputs and output after `count*width*width` remain unchanged.
+/// Selector 0 leaves a slot unchanged. Selector 1 scales coefficient zero and fills the slot with
+/// its constant residual. Selector 7 at width 4 uses the dedicated weights and transform; other
+/// non-zero selectors use the generic full transform. At width 8, selector 7 also uses that
+/// generic full transform. The module table specifies profile weights, rounding, wrapping, and
+/// final transpose. All inputs and output after `count*width*width` remain unchanged.
 ///
 /// # Errors
 ///
-/// Returns [`TransformError::InvalidWidth`] unless width is 4 or 8, [`TransformError::InvalidCount`] for count above four, or [`TransformError::BufferTooSmall`] for insufficient output. All validation precedes slot writes.
+/// Returns [`TransformError::InvalidWidth`] unless width is 4 or 8,
+/// [`TransformError::InvalidCount`] for count above four, or [`TransformError::BufferTooSmall`]
+/// for insufficient output. All validation precedes slot writes.
 pub fn reconstruct_component_residual(
     width: usize,
     count: usize,

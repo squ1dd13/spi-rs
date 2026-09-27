@@ -1,32 +1,75 @@
 //! Decode runs, palette indices, component layouts, and signed coefficient values.
 //!
-//! Entropy syntax represents values with variable-length bit sequences. A symbol is a decoded choice, such as a mode or a magnitude with a position change. A coding context is stored information used to interpret that choice. This implementation uses a 32-bit contextual accumulator and neighbouring mode history; “contextual” does not mean a standard arithmetic coder.
+//! Entropy syntax represents values with variable-length bit sequences. A symbol is a decoded
+//! choice, such as a mode or a magnitude with a position change. A coding context is stored
+//! information used to interpret that choice. This implementation uses a 32-bit contextual
+//! accumulator and neighbouring mode history; “contextual” does not mean a standard arithmetic
+//! coder.
 //!
-//! A component is one value per pixel. An argument identifies a component region inside a 16 by 16 block. A slot is a square region with its own prediction mode and coefficient array. [`ComponentRequest`] selects argument geometry and stream rules. [`ComponentResult`] returns slot width, layout count, modes, coefficient activity, scan variants, and row-major values. A layout slot can have no coefficients and still require prediction.
+//! A component is one value per pixel. An argument identifies a component region inside a 16 by 16
+//! block. A slot is a square region with its own prediction mode and coefficient array.
+//! [`ComponentRequest`] selects argument geometry and stream rules. [`ComponentResult`] returns
+//! slot width, layout count, modes, coefficient activity, scan variants, and row-major values. A
+//! layout slot can have no coefficients and still require prediction.
 //!
 //! # Decoding order
 //!
-//! [`decode_contextual_component`] first selects width and slot count, then reads mode symbols with [`CoefficientHistory`]. It next reads an activity-table code. For each active slot it reads a coefficient count and that many signed symbols. The result classifies no coefficients as inactive, a single coefficient at scan position zero as constant-only, and other arrangements as a full block. Colour uses these classes to select transforms. Alpha uses the returned values directly as residuals; the class only distinguishes active from inactive there.
+//! [`decode_contextual_component`] first selects width and slot count, then reads mode symbols
+//! with [`CoefficientHistory`]. It next reads an activity-table code. For each active slot it
+//! reads a coefficient count and that many signed symbols. The result classifies no coefficients
+//! as inactive, a single coefficient at scan position zero as constant-only, and other
+//! arrangements as a full block. Colour uses these classes to select transforms. Alpha uses the
+//! returned values directly as residuals; the class only distinguishes active from inactive there.
 //!
-//! The usual width bit gives maximum width with one slot for zero, or half width with four slots for one. Colour undivided blocks have already read their layout selector and obtain width 16 without the special `fixed_width == 16` branch. That special branch skips seven bits, forces mode 4 and diagonal scan, and has no production caller in this checkout.
+//! The usual width bit gives maximum width with one slot for zero, or half width with four slots
+//! for one. Colour undivided blocks have already read their layout selector and obtain width 16
+//! without the special `fixed_width == 16` branch. That special branch skips seven bits, forces
+//! mode 4 and diagonal scan, and has no production caller in this checkout.
 //!
 //! # Prefixes, symbols, and scans
 //!
-//! An unsigned contextual index has `z` leading zeroes, a terminating one, and `z` suffix bits. Its value is `2^z - 1 + suffix`. The reader routines also preserve the accumulator's replacement-refill semantics; they must not read beyond bounded lookahead. Coefficient counts are one plus this index.
+//! An unsigned contextual index has `z` leading zeroes, a terminating one, and `z` suffix bits.
+//! Its value is `2^z - 1 + suffix`. The reader routines also preserve the accumulator's
+//! replacement-refill semantics; they must not read beyond bounded lookahead. Coefficient counts
+//! are one plus this index.
 //!
-//! For a coefficient, prefix width `z` is followed by `z+1` payload bits. The low payload bit is the sign (one means negative); `code = 2^z + (payload >> 1)`. For `z <= 6`, [`SHORT_SYMBOLS`] at `code-1` supplies magnitude and scan delta. For a long colour code, `p=code-1`, delta is `p & 255`, and magnitude is `(p >> 8)-1`. For long alpha codes, `p=code-128`; the low 4, 6, or 8 bits give delta for widths 4, 8, or 16, and the remaining value plus one gives magnitude. Magnitudes above 32767 are rejected.
+//! For a coefficient, prefix width `z` is followed by `z+1` payload bits. The low payload bit is
+//! the sign (one means negative); `code = 2^z + (payload >> 1)`. For `z <= 6`, [`SHORT_SYMBOLS`]
+//! at `code-1` supplies magnitude and scan delta. For a long colour code, `p=code-1`, delta is `p
+//! & 255`, and magnitude is `(p >> 8)-1`. For long alpha codes, `p=code-128`; the low 4, 6, or 8
+//! bits give delta for widths 4, 8, or 16, and the remaining value plus one gives magnitude.
+//! Magnitudes above 32767 are rejected.
 //!
-//! A scan is the order in which coded values visit a square. The scan cursor starts at zero. Add the delta, map that cursor to a row-major array index, write the signed value, then increment the cursor. Colour always uses diagonal scan. Alpha uses the mode mapping `[1,2,0,0,1,1,0,2,2,0,0,1,1,0,0,2,2]` for modes 0..16, where 0 is diagonal, 1 row order, and 2 column order; mode 17 uses diagonal scan. The first width-4 diagonal positions are 0,4,1,2,5,8. Thus scan order and array layout are separate concepts.
+//! A scan is the order in which coded values visit a square. The scan cursor starts at zero. Add
+//! the delta, map that cursor to a row-major array index, write the signed value, then increment
+//! the cursor. Colour always uses diagonal scan. Alpha uses the mode mapping
+//! `[1,2,0,0,1,1,0,2,2,0,0,1,1,0,0,2,2]` for modes 0..16, where 0 is diagonal, 1 row order, and 2
+//! column order; mode 17 uses diagonal scan. The first width-4 diagonal positions are 0,4,1,2,5,8.
+//! Thus scan order and array layout are separate concepts.
 //!
-//! For example, coefficient bits `0001 0110` have prefix width 3 and payload 6. They select short-table entry 10, magnitude 5, delta 0, positive sign. Starting at cursor zero, this writes value 5 at position zero and advances the cursor to one. This calculation is not a complete encoded component.
+//! For example, coefficient bits `0001 0110` have prefix width 3 and payload 6. They select
+//! short-table entry 10, magnitude 5, delta 0, positive sign. Starting at cursor zero, this writes
+//! value 5 at position zero and advances the cursor to one. This calculation is not a complete
+//! encoded component.
 //!
 //! # Mode history and partial effects
 //!
-//! [`CoefficientHistory`] stores mode symbols in four-pixel cells, plus neutral-state flags. It stores no sample values. Its stride is four cells per picture block plus one boundary cell. Initially all symbols are 2 and neutral flags are true. Row transitions retain a delayed row and reset the active four rows. Colour has a first-exposure normalisation rule; alpha copies the last active row directly. Histories are created anew for each record.
+//! [`CoefficientHistory`] stores mode symbols in four-pixel cells, plus neutral-state flags. It
+//! stores no sample values. Its stride is four cells per picture block plus one boundary cell.
+//! Initially all symbols are 2 and neutral flags are true. Row transitions retain a delayed row
+//! and reset the active four rows. Colour has a first-exposure normalisation rule; alpha copies
+//! the last active row directly. Histories are created anew for each record.
 //!
-//! A leading mode bit of one selects the left or delayed upper candidate; a further bit selects the delayed candidate when they differ. A leading zero selects explicit syntax. Prefix `01` then selects mode 2 or symbol 17 with one bit; prefix `00` reads four bits and skips values reserved for the predicted choices. Symbol 17 aliases mode 2 only during neighbour selection; its final prediction mode is planar 17.
+//! A leading mode bit of one selects the left or delayed upper candidate; a further bit selects
+//! the delayed candidate when they differ. A leading zero selects explicit syntax. Prefix `01`
+//! then selects mode 2 or symbol 17 with one bit; prefix `00` reads four bits and skips values
+//! reserved for the predicted choices. Symbol 17 aliases mode 2 only during neighbour selection;
+//! its final prediction mode is planar 17.
 //!
-//! History is updated during layout decoding, before coefficient parsing can fail. Contextual reads and output writes can also have partial effects. Callers must discard a failed operation, not retry as if the reader and history were unchanged. The crate page explains byte runs, palette runs, and record-relative bit accounting.
+//! History is updated during layout decoding, before coefficient parsing can fail. Contextual
+//! reads and output writes can also have partial effects. Callers must discard a failed operation,
+//! not retry as if the reader and history were unchanged. The crate page explains byte runs,
+//! palette runs, and record-relative bit accounting.
 
 use thiserror::Error;
 
@@ -67,7 +110,8 @@ pub enum EntropyError {
 
 /// Reads the zero count of a unary prefix from the ordinary bit reader.
 ///
-/// A terminating one must occur before `max_zeros`. Truncation or a missing terminator returns [`EntropyError::InvalidCode`].
+/// A terminating one must occur before `max_zeros`. Truncation or a missing terminator returns
+/// [`EntropyError::InvalidCode`].
 pub fn read_unary_prefix(
     bits: &mut crate::bits::BitReader<'_>,
     max_zeros: u32,
@@ -84,11 +128,19 @@ pub fn read_unary_prefix(
 
 /// Decodes repeated-byte RLE until at least `output_size` bytes exist.
 ///
-/// A run is present when the preceding two literals are equal. Run and literal values use unary-prefixed codes, with an escape to a raw byte for large literal prefixes. The stream's run counter wraps to eight bits and total logical production is limited to 512 bytes.
+/// A run is present when the preceding two literals are equal. Run and literal values use
+/// unary-prefixed codes, with an escape to a raw byte for large literal prefixes. The stream's run
+/// counter wraps to eight bits and total logical production is limited to 512 bytes.
 ///
-/// The returned logical count includes all repeated values and the literal consumed after the run, even if they pass `output_size`. Writes stop at `output_size`; extra scratch capacity is not filled with excess logical samples. A literal is still consumed after a run reaches the requested size. For requested size 3, two literal 5s, a run of one 5, and a final literal 7 give output `[5,5,5]` and logical count 4.
+/// The returned logical count includes all repeated values and the literal consumed after the run,
+/// even if they pass `output_size`. Writes stop at `output_size`; extra scratch capacity is not
+/// filled with excess logical samples. A literal is still consumed after a run reaches the
+/// requested size. For requested size 3, two literal 5s, a run of one 5, and a final literal 7
+/// give output `[5,5,5]` and logical count 4.
 ///
-/// A short output is rejected before reading. Invalid syntax or logical production above 512 can fail after earlier cursor advances and writes; no rollback occurs. A zero requested size returns zero without reading or writing.
+/// A short output is rejected before reading. Invalid syntax or logical production above 512 can
+/// fail after earlier cursor advances and writes; no rollback occurs. A zero requested size
+/// returns zero without reading or writing.
 pub fn decode_rle_plane(
     bits: &mut crate::bits::BitReader<'_>,
     output: &mut [u8],
@@ -147,7 +199,8 @@ pub fn decode_rle_plane(
 
 /// Shifts a contextual accumulator left with wrapping semantics.
 ///
-/// A shift of 32 or more produces the target's wrapping-shift result, matching the codec reader operations.
+/// A shift of 32 or more produces the target's wrapping-shift result, matching the codec reader
+/// operations.
 fn lz(value: u32, shift: u32) -> u32 {
     value.wrapping_shl(shift)
 }
@@ -161,9 +214,12 @@ fn leading_zeroes(value: u8) -> u32 {
 
 /// Decodes the width of a contextual Exp-Golomb prefix.
 ///
-/// The procedure reproduces SPI's accumulator alignment and lookahead refill behaviour, including a bounded peek into the following byte. It consumes the zero prefix and terminating one, but not the suffix.
+/// The procedure reproduces SPI's accumulator alignment and lookahead refill behaviour, including
+/// a bounded peek into the following byte. It consumes the zero prefix and terminating one, but
+/// not the suffix.
 ///
-/// Returns [`EntropyError::InvalidCode`] when refill fails or the derived width is outside 0 through 31.
+/// Returns [`EntropyError::InvalidCode`] when refill fails or the derived width is outside 0
+/// through 31.
 pub fn read_context_prefix(reader: &mut ContextBitReader<'_>) -> Result<u32, EntropyError> {
     let old_available = reader.available;
     let lookahead = 24 | (old_available & 7);
@@ -223,7 +279,8 @@ pub fn read_context_prefix(reader: &mut ContextBitReader<'_>) -> Result<u32, Ent
 
 /// Decodes one contextual Exp-Golomb index.
 ///
-/// The returned tuple is `(width, suffix, index)`, where `index` is `(2^width - 1) + suffix`. Suffix fragments can cross a replacement refill and are merged explicitly.
+/// The returned tuple is `(width, suffix, index)`, where `index` is `(2^width - 1) + suffix`.
+/// Suffix fragments can cross a replacement refill and are merged explicitly.
 ///
 /// Truncated prefix or suffix data returns [`EntropyError::InvalidCode`].
 pub fn read_context_index(
@@ -259,7 +316,8 @@ pub fn read_context_index(
 
 /// Decodes one fixed-width literal used by contextual palette indices.
 ///
-/// Literal bits can straddle the current accumulator and a replacement refill. The procedure merges both fragments and leaves subsequent bits left-aligned.
+/// Literal bits can straddle the current accumulator and a replacement refill. The procedure
+/// merges both fragments and leaves subsequent bits left-aligned.
 fn read_contextual_literal(
     reader: &mut ContextBitReader<'_>,
     prefix_bits: u32,
@@ -291,7 +349,9 @@ fn read_contextual_literal(
 
 /// Decodes the run-control code after a contextual palette literal.
 ///
-/// The codec uses prefix lookahead similar to [`read_context_prefix`] but returns the run-control value, code width, and suffix separately. Accumulator fragments are merged across refills as required.
+/// The codec uses prefix lookahead similar to [`read_context_prefix`] but returns the run-control
+/// value, code width, and suffix separately. Accumulator fragments are merged across refills as
+/// required.
 ///
 /// Invalid widths or incomplete refills return [`EntropyError::InvalidCode`].
 fn read_contextual_run_control(
@@ -397,9 +457,12 @@ fn read_contextual_run_control(
 
 /// Decodes 256 contextual palette indices.
 ///
-/// Each literal is followed by a run-control code that can repeat it. `initial_prefix_bits` gives the fixed literal width and must be from 1 through 31. The destination can be larger than 256 but only the first 256 entries carry syntax output.
+/// Each literal is followed by a run-control code that can repeat it. `initial_prefix_bits` gives
+/// the fixed literal width and must be from 1 through 31. The destination can be larger than 256
+/// but only the first 256 entries carry syntax output.
 ///
-/// Returns [`EntropyError`] for invalid prefix width, a short destination, malformed run syntax, or a run beyond capacity.
+/// Returns [`EntropyError`] for invalid prefix width, a short destination, malformed run syntax,
+/// or a run beyond capacity.
 pub fn decode_contextual_indices(
     reader: &mut ContextBitReader<'_>,
     initial_prefix_bits: u32,
@@ -591,9 +654,11 @@ const SCAN8: [[u16; 64]; 3] = [
 
 /// Maps a coefficient scan cursor to a row-major transform position.
 ///
-/// Variants 0, 1, and 2 are diagonal, row-major, and column-major. Widths 4 and 8 use fixed tables; width 16 calculates its diagonal scan and directly calculates the linear variants.
+/// Variants 0, 1, and 2 are diagonal, row-major, and column-major. Widths 4 and 8 use fixed
+/// tables; width 16 calculates its diagonal scan and directly calculates the linear variants.
 ///
-/// Returns [`EntropyError::InvalidScan`] for an unsupported width or variant, or an index outside the square block.
+/// Returns [`EntropyError::InvalidScan`] for an unsupported width or variant, or an index outside
+/// the square block.
 pub fn coefficient_scan_position(
     width: u8,
     variant: u8,
@@ -645,9 +710,12 @@ pub fn coefficient_scan_position(
 
 /// Decodes one contextual coefficient symbol and advances its scan cursor.
 ///
-/// Short symbols use [`SHORT_SYMBOLS`]. Long colour symbols pack an eight-bit scan delta; other long symbols use `partition_shift`. The payload low bit gives coefficient sign. Scan deltas are applied before mapping to row-major position.
+/// Short symbols use [`SHORT_SYMBOLS`]. Long colour symbols pack an eight-bit scan delta; other
+/// long symbols use `partition_shift`. The payload low bit gives coefficient sign. Scan deltas are
+/// applied before mapping to row-major position.
 ///
-/// Returns [`EntropyError`] for invalid partitions, truncated codes, excessive magnitude, scan overflow, or a position outside the transform.
+/// Returns [`EntropyError`] for invalid partitions, truncated codes, excessive magnitude, scan
+/// overflow, or a position outside the transform.
 pub fn decode_scanned_coefficient(
     reader: &mut ContextBitReader<'_>,
     partition_shift: u32,
@@ -711,7 +779,8 @@ pub fn decode_scanned_coefficient(
 
 /// Stores spatial syntax-symbol history for contextual coefficients.
 ///
-/// Byte values hold previous mode symbols. A parallel boolean plane marks neutral 16-wide symbols so colour row transitions can normalise ambiguous zero modes correctly.
+/// Byte values hold previous mode symbols. A parallel boolean plane marks neutral 16-wide symbols
+/// so colour row transitions can normalise ambiguous zero modes correctly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientHistory {
     /// Mode symbols in a padded row grid.
@@ -729,16 +798,20 @@ pub struct CoefficientHistory {
 impl CoefficientHistory {
     /// Returns reserved heap storage in bytes.
     ///
-    /// The current calculation charges `ceil(neutral.capacity()/8)` bytes. Rust `Vec<bool>` stores byte-sized elements, so this undercounts that vector. This method describes the existing account, not exact allocated storage.
+    /// The current calculation charges `ceil(neutral.capacity()/8)` bytes. Rust `Vec<bool>` stores
+    /// byte-sized elements, so this undercounts that vector. This method describes the existing
+    /// account, not exact allocated storage.
     pub(crate) fn heap_bytes(&self) -> usize {
         self.bytes.capacity() + self.neutral.capacity().div_ceil(8)
     }
 
     /// Allocates neutral coefficient history for one slice.
     ///
-    /// Storage includes one preceding row, four cells per slice block row, and four trailing rows. Bytes initialise to mode 2 and neutral flags initialise true.
+    /// Storage includes one preceding row, four cells per slice block row, and four trailing rows.
+    /// Bytes initialise to mode 2 and neutral flags initialise true.
     ///
-    /// Returns [`EntropyError::InvalidHistory`] for zero or overflowing geometry and [`EntropyError::AllocationFailure`] when either vector cannot reserve storage.
+    /// Returns [`EntropyError::InvalidHistory`] for zero or overflowing geometry and
+    /// [`EntropyError::AllocationFailure`] when either vector cannot reserve storage.
     pub(crate) fn new(row_stride: u16, slice_rows: u16) -> Result<Self, EntropyError> {
         let stride = usize::from(row_stride);
         if stride == 0 {
@@ -768,7 +841,9 @@ impl CoefficientHistory {
 
     /// Advances colour history to a new block row.
     ///
-    /// The final symbol from each uniform four-row column becomes delayed history. On the first exposure of neutral state, luma and chroma normalisation rules adjust ambiguous modes. The active four-row window then resets to neutral mode 2.
+    /// The final symbol from each uniform four-row column becomes delayed history. On the first
+    /// exposure of neutral state, luma and chroma normalisation rules adjust ambiguous modes. The
+    /// active four-row window then resets to neutral mode 2.
     ///
     /// Returns [`EntropyError::InvalidHistory`] when the active window exceeds allocated storage.
     pub(crate) fn begin_block_row(
@@ -806,9 +881,11 @@ impl CoefficientHistory {
 
     /// Advances alpha history to a new block row.
     ///
-    /// For rows after zero, the final active row is copied into delayed history and the four-row active window resets to neutral mode 2.
+    /// For rows after zero, the final active row is copied into delayed history and the four-row
+    /// active window resets to neutral mode 2.
     ///
-    /// Returns [`EntropyError::InvalidHistory`] when origin or active window layout is inconsistent.
+    /// Returns [`EntropyError::InvalidHistory`] when origin or active window layout is
+    /// inconsistent.
     pub(crate) fn begin_alpha_block_row(&mut self, block_y: u16) -> Result<(), EntropyError> {
         let end = self.origin + self.stride * 4;
         if self.origin != self.stride || end > self.bytes.len() {
@@ -826,9 +903,11 @@ impl CoefficientHistory {
 
     /// Stores one decoded history symbol over its component footprint.
     ///
-    /// Width-four components occupy one history cell. Wider components fill a square measured in four-pixel cells, using `maximum_width` to determine side length.
+    /// Width-four components occupy one history cell. Wider components fill a square measured in
+    /// four-pixel cells, using `maximum_width` to determine side length.
     ///
-    /// Returns [`EntropyError::InvalidHistory`] when the origin, offset, or footprint leaves storage.
+    /// Returns [`EntropyError::InvalidHistory`] when the origin, offset, or footprint leaves
+    /// storage.
     fn store(
         &mut self,
         offset: usize,
@@ -878,9 +957,12 @@ fn history_mode(symbol: u8) -> u8 {
 
 /// Decodes one mode symbol using previous and delayed spatial history.
 ///
-/// The leading decision chooses either a compact explicit symbol or neighbour prediction. Explicit syntax skips values that would duplicate predicted modes. Predicted syntax can select between left and delayed history and propagates neutral state for 16-wide components.
+/// The leading decision chooses either a compact explicit symbol or neighbour prediction. Explicit
+/// syntax skips values that would duplicate predicted modes. Predicted syntax can select between
+/// left and delayed history and propagates neutral state for 16-wide components.
 ///
-/// The decoded value is stored across its component footprint. Truncated syntax or invalid history returns [`EntropyError`].
+/// The decoded value is stored across its component footprint. Truncated syntax or invalid history
+/// returns [`EntropyError`].
 fn read_context_history_symbol(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,
@@ -978,7 +1060,8 @@ fn read_context_history_symbol(
 
 /// Describes one contextual coefficient component request.
 ///
-/// Geometry and stream flags control layout decoding, history addressing, symbol tables, and coefficient long-code partitioning.
+/// Geometry and stream flags control layout decoding, history addressing, symbol tables, and
+/// coefficient long-code partitioning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentRequest {
     /// The component argument within the containing 16 by 16 block.
@@ -997,7 +1080,10 @@ pub struct ComponentRequest {
 
 /// Classify a slot's decoded values for the reconstruction caller.
 ///
-/// No coefficients gives `Inactive`. Exactly one value at scan position zero gives `ConstantResidual`; any other active arrangement gives `FullBlockTransform`. Colour maps these classes to its reconstruction selectors. Alpha only tests for `Inactive` and otherwise uses the array directly; it does not run an inverse transform or expand a constant.
+/// No coefficients gives `Inactive`. Exactly one value at scan position zero gives
+/// `ConstantResidual`; any other active arrangement gives `FullBlockTransform`. Colour maps these
+/// classes to its reconstruction selectors. Alpha only tests for `Inactive` and otherwise uses the
+/// array directly; it does not run an inverse transform or expand a constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallbackKind {
     /// The slot has no coded coefficients.
@@ -1010,9 +1096,14 @@ pub enum CallbackKind {
 
 /// Layout and decoded values for one component argument.
 ///
-/// `count` is the number of layout slots, one or four in production. It does not count active coefficient slots. Each slot has a prediction mode even if its callback is inactive. Values occupy the first `width*width` elements of a 256-element row-major array; unused elements start at zero.
+/// `count` is the number of layout slots, one or four in production. It does not count active
+/// coefficient slots. Each slot has a prediction mode even if its callback is inactive. Values
+/// occupy the first `width*width` elements of a 256-element row-major array; unused elements start
+/// at zero.
 ///
-/// Colour interprets the values as transform coefficients. Alpha applies the same arrays directly as residuals. Callback classification is derived from the coded count and scan endpoint, not read as an independent selector field.
+/// Colour interprets the values as transform coefficients. Alpha applies the same arrays directly
+/// as residuals. Callback classification is derived from the coded count and scan endpoint, not
+/// read as an independent selector field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentResult {
     /// The square transform width for every active slot.
@@ -1053,9 +1144,12 @@ const STATE8: [u8; 64] = [
 
 /// Decodes transform width, slot count, and prediction modes for one component.
 ///
-/// A fixed width creates one slot. Otherwise, an optional state bit selects maximum width or half-width with one or four slots. History offsets use four-pixel cells and account for argument quadrant and horizontal picture position.
+/// A fixed width creates one slot. Otherwise, an optional state bit selects maximum width or
+/// half-width with one or four slots. History offsets use four-pixel cells and account for
+/// argument quadrant and horizontal picture position.
 ///
-/// Returns [`EntropyError`] for invalid widths, slot counts, history addresses, or truncated mode syntax.
+/// Returns [`EntropyError`] for invalid widths, slot counts, history addresses, or truncated mode
+/// syntax.
 fn read_component_layout(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,
@@ -1123,9 +1217,15 @@ fn read_component_layout(
 
 /// Decodes one contextual component's layout and coefficient slots.
 ///
-/// The special `fixed_width == 16` branch skips seven bits, forces mode 4, and uses diagonal coefficient scan. It has no production caller. Production undivided colour obtains width 16 with `fixed_width == 0` and an already-read layout selector; it follows the ordinary state-table path. Other widths decode a state table that marks active slots, derive scan variants from prediction modes, and classify a single coefficient at scan position zero as a constant residual.
+/// The special `fixed_width == 16` branch skips seven bits, forces mode 4, and uses diagonal
+/// coefficient scan. It has no production caller. Production undivided colour obtains width 16
+/// with `fixed_width == 0` and an already-read layout selector; it follows the ordinary
+/// state-table path. Other widths decode a state table that marks active slots, derive scan
+/// variants from prediction modes, and classify a single coefficient at scan position zero as a
+/// constant residual.
 ///
-/// Returns [`EntropyError`] for malformed layout, state, coefficient count, symbol, history, or scan syntax.
+/// Returns [`EntropyError`] for malformed layout, state, coefficient count, symbol, history, or
+/// scan syntax.
 pub fn decode_contextual_component(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,

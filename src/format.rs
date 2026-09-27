@@ -1,10 +1,21 @@
 //! Locate the sections and records in a complete SPI container.
 //!
-//! Parsing here produces borrowed byte slices; it does not reconstruct samples. The outer two lengths are little-endian and exclude their own four bytes. Picture fields and record lengths are big-endian. A record length includes its six framing bytes. [`parse_container`] requires exact outer consumption, [`parse_picture`] permits extra picture-section bytes, and [`parse_records`] requires complete framed records.
+//! Parsing here produces borrowed byte slices; it does not reconstruct samples. The outer two
+//! lengths are little-endian and exclude their own four bytes. Picture fields and record lengths
+//! are big-endian. A record length includes its six framing bytes. [`parse_container`] requires
+//! exact outer consumption, [`parse_picture`] permits extra picture-section bytes, and
+//! [`parse_records`] requires complete framed records.
 //!
-//! The crate page's “Container and records” section gives the byte and bit tables. The [`Record`] view keeps both the complete record and its payload so codec readers can use the required input origin. Colour starts at payload bit zero; diagnostics add `payload_offset * 8`. Alpha reads the complete record. `stream_offset` instead locates a record inside the record section and is not a bit-reader origin.
+//! The crate page's “Container and records” section gives the byte and bit tables. The [`Record`]
+//! view keeps both the complete record and its payload so codec readers can use the required input
+//! origin. Colour starts at payload bit zero; diagnostics add `payload_offset * 8`. Alpha reads
+//! the complete record. `stream_offset` instead locates a record inside the record section and is
+//! not a bit-reader origin.
 //!
-//! [`parse_records`] checks markers, lengths, and the terminal zero bits. It does not check that record indices are consecutive or that records cover the picture; [`crate::decoder`] performs those checks after it derives the padded geometry. Opaque fields are retained with their widths but have no established meaning here.
+//! [`parse_records`] checks markers, lengths, and the terminal zero bits. It does not check that
+//! record indices are consecutive or that records cover the picture; [`crate::decoder`] performs
+//! those checks after it derives the padded geometry. Opaque fields are retained with their widths
+//! but have no established meaning here.
 
 use std::io::Cursor;
 
@@ -13,7 +24,8 @@ use thiserror::Error;
 
 /// Malformed SPI framing and fixed headers.
 ///
-/// These errors describe byte-level container defects. Codec syntax errors inside a record use the higher-level decoder error types.
+/// These errors describe byte-level container defects. Codec syntax errors inside a record use the
+/// higher-level decoder error types.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FormatError {
     /// The first section length is incomplete.
@@ -59,7 +71,8 @@ pub enum FormatError {
 
 /// Borrows the two payload sections of an SPI container.
 ///
-/// The slices exclude their four-byte little-endian length fields. `records` still contains each record's own framing header.
+/// The slices exclude their four-byte little-endian length fields. `records` still contains each
+/// record's own framing header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Container<'data> {
     /// Borrows the picture-header section.
@@ -70,11 +83,14 @@ pub struct Container<'data> {
 
 /// Parses the two length-prefixed sections of an SPI container.
 ///
-/// The parser requires both four-byte little-endian lengths and exact consumption of `input`. It borrows the section payloads and does not inspect their contents.
+/// The parser requires both four-byte little-endian lengths and exact consumption of `input`. It
+/// borrows the section payloads and does not inspect their contents.
 ///
 /// # Errors
 ///
-/// Returns [`FormatError::TruncatedContainer`] when the first length is absent, [`FormatError::InvalidContainerLength`] when either section is incomplete or its bounds overflow, and [`FormatError::TrailingContainerBytes`] when data follows the record section.
+/// Returns [`FormatError::TruncatedContainer`] when the first length is absent,
+/// [`FormatError::InvalidContainerLength`] when either section is incomplete or its bounds
+/// overflow, and [`FormatError::TrailingContainerBytes`] when data follows the record section.
 pub fn parse_container(input: &[u8]) -> Result<Container<'_>, FormatError> {
     if input.len() < 4 {
         return Err(FormatError::TruncatedContainer);
@@ -109,7 +125,8 @@ pub fn parse_container(input: &[u8]) -> Result<Container<'_>, FormatError> {
 
 /// The understood fields from the fixed picture header.
 ///
-/// SPI stores dimensions as big-endian 16-bit integers. Unknown ancillary fields are intentionally not exposed.
+/// SPI stores dimensions as big-endian 16-bit integers. Unknown ancillary fields are intentionally
+/// not exposed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PictureInfo {
     /// The visible picture width in pixels.
@@ -124,7 +141,8 @@ pub struct PictureInfo {
 
 /// Maps the fixed, big-endian picture header before validation.
 ///
-/// Fields prefixed with an underscore have unknown semantics and are retained only to place the understood fields at their correct offsets.
+/// Fields prefixed with an underscore have unknown semantics and are retained only to place the
+/// understood fields at their correct offsets.
 #[derive(BinRead)]
 #[br(magic = b"\xaa\x01")]
 struct PictureFields {
@@ -146,11 +164,13 @@ struct PictureFields {
 
 /// Parses the understood part of a picture header.
 ///
-/// The header must contain at least 16 bytes, start with `AA 01`, and declare non-zero dimensions. Extra picture-section bytes are permitted because their format is not yet understood.
+/// The header must contain at least 16 bytes, start with `AA 01`, and declare non-zero dimensions.
+/// Extra picture-section bytes are permitted because their format is not yet understood.
 ///
 /// # Errors
 ///
-/// Returns a truncated-header, invalid-identifier, or invalid-dimensions [`FormatError`] as applicable.
+/// Returns a truncated-header, invalid-identifier, or invalid-dimensions [`FormatError`] as
+/// applicable.
 pub fn parse_picture(input: &[u8]) -> Result<PictureInfo, FormatError> {
     if input.len() < 16 {
         return Err(FormatError::TruncatedPictureHeader);
@@ -170,7 +190,8 @@ pub fn parse_picture(input: &[u8]) -> Result<PictureInfo, FormatError> {
 
 /// The bit-packed syntax fields before a record's codec payload.
 ///
-/// Only `index` currently has known decoder semantics. The other values are exposed to keep reverse-engineering observations separate from assumptions.
+/// Only `index` currently has known decoder semantics. The other values are exposed to keep
+/// reverse-engineering observations separate from assumptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordHeader {
     /// The first opaque byte in bitstream order.
@@ -193,7 +214,9 @@ pub struct RecordHeader {
 
 /// Borrows one framed record and its codec payload.
 ///
-/// A record consists of a six-byte `AA 02` framing header, an eight-byte bit-packed syntax header, and the colour and optional alpha streams. Offsets permit codec errors to refer to the complete record.
+/// A record consists of a six-byte `AA 02` framing header, an eight-byte bit-packed syntax header,
+/// and the colour and optional alpha streams. Offsets permit codec errors to refer to the complete
+/// record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Record<'data> {
     /// The complete record, including its 6-byte framing header.
@@ -212,11 +235,14 @@ pub struct Record<'data> {
 
 /// Parses the eight-byte bit-packed syntax header of one record.
 ///
-/// Fields are read most-significant bit first. Four reserved terminal bits and the following end flag must all be zero; an incomplete field or non-zero reserved value makes the entire header invalid.
+/// Fields are read most-significant bit first. Four reserved terminal bits and the following end
+/// flag must all be zero; an incomplete field or non-zero reserved value makes the entire header
+/// invalid.
 ///
 /// # Errors
 ///
-/// Returns [`FormatError::InvalidRecordHeader`] tagged with `record_number` when any bit is missing or a reserved terminal value is set.
+/// Returns [`FormatError::InvalidRecordHeader`] tagged with `record_number` when any bit is
+/// missing or a reserved terminal value is set.
 fn parse_record_header(
     header_bytes: &[u8],
     record_number: usize,
@@ -248,13 +274,19 @@ fn parse_record_header(
 
 /// Splits a record section into checked, borrowed record views.
 ///
-/// Each record must start with `AA 02`; its big-endian 32-bit length includes the six-byte framing header and must be at least 14 bytes to include the syntax header. Parsing continues until the section is consumed exactly. This function validates framing only and does not require record indices to be consecutive.
+/// Each record must start with `AA 02`; its big-endian 32-bit length includes the six-byte framing
+/// header and must be at least 14 bytes to include the syntax header. Parsing continues until the
+/// section is consumed exactly. This function validates framing only and does not require record
+/// indices to be consecutive.
 ///
-/// `max_records` is both a resource bound and a format-context bound supplied by the decoder. Storage reservation is limited by the smaller of that value and the number of minimum-size records that can fit in `payload`.
+/// `max_records` is both a resource bound and a format-context bound supplied by the decoder.
+/// Storage reservation is limited by the smaller of that value and the number of minimum-size
+/// records that can fit in `payload`.
 ///
 /// # Errors
 ///
-/// Returns [`FormatError`] for an invalid marker, length, syntax header, incomplete final framing header, excess record count, or descriptor allocation failure.
+/// Returns [`FormatError`] for an invalid marker, length, syntax header, incomplete final framing
+/// header, excess record count, or descriptor allocation failure.
 pub fn parse_records(payload: &[u8], max_records: usize) -> Result<Vec<Record<'_>>, FormatError> {
     let mut records = Vec::new();
     records

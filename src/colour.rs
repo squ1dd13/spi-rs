@@ -1,10 +1,22 @@
 //! Reconstruct the green, blue, and red byte planes for a record.
 //!
-//! Each record covers a horizontal slice of the padded 16 by 16 block grid. [`decode_slice`] reads one method per block in row order and returns three temporary planes plus a bit endpoint. The endpoint includes the record headers and locates the optional alpha stream. [`crate::decoder`] clips these planes to visible dimensions and changes G, B, R storage order to R, G, B output order.
+//! Each record covers a horizontal slice of the padded 16 by 16 block grid. [`decode_slice`] reads
+//! one method per block in row order and returns three temporary planes plus a bit endpoint. The
+//! endpoint includes the record headers and locates the optional alpha stream. [`crate::decoder`]
+//! clips these planes to visible dimensions and changes G, B, R storage order to R, G, B output
+//! order.
 //!
-//! Methods can copy current-picture storage, decode byte runs, reconstruct predicted components, expand a palette, or read raw bytes. Prediction estimates samples from prepared top and left edges. Colour method 3 adds inverse-transformed residuals to those estimates in a transformed component representation, then converts back to byte planes.
+//! Methods can copy current-picture storage, decode byte runs, reconstruct predicted components,
+//! expand a palette, or read raw bytes. Prediction estimates samples from prepared top and left
+//! edges. Colour method 3 adds inverse-transformed residuals to those estimates in a transformed
+//! component representation, then converts back to byte planes.
 //!
-//! [`ColourState`] retains picture samples and edge banks across records. Palettes and coefficient-mode histories are local to one record. Edges are prepared before residual and predictive blocks, not after every block. Record-first-row preparation replaces the physical top reference even when a preceding record exists. The crate page contains the method mapping, conversion equations, and state-lifetime table; the submodules give the local storage and mutation contracts.
+//! [`ColourState`] retains picture samples and edge banks across records. Palettes and
+//! coefficient-mode histories are local to one record. Edges are prepared before residual and
+//! predictive blocks, not after every block. Record-first-row preparation replaces the physical
+//! top reference even when a preceding record exists. The crate page contains the method mapping,
+//! conversion equations, and state-lifetime table; the submodules give the local storage and
+//! mutation contracts.
 
 /// Decodes block method syntax and dispatches colour reconstruction.
 mod blocks;
@@ -26,7 +38,8 @@ pub use history::ColourState;
 
 /// The three decoded colour planes for one record slice.
 ///
-/// Planes use SPI order: green, blue, then red. Each plane includes right-edge padding to a 16-pixel block boundary and has `stride * geometry.block_rows * 16` samples.
+/// Planes use SPI order: green, blue, then red. Each plane includes right-edge padding to a
+/// 16-pixel block boundary and has `stride * geometry.block_rows * 16` samples.
 #[derive(Debug)]
 pub struct ColourSlice {
     /// Green, blue, and red samples in separate row-major planes.
@@ -40,7 +53,8 @@ pub struct ColourSlice {
 impl ColourSlice {
     /// Returns the allocated byte capacity of all three slice planes.
     ///
-    /// `u8` has a size of one byte, so the sum of vector capacities is the memory-accounting value directly.
+    /// `u8` has a size of one byte, so the sum of vector capacities is the memory-accounting value
+    /// directly.
     pub(crate) fn heap_bytes(&self) -> usize {
         self.planes.iter().map(Vec::capacity).sum()
     }
@@ -48,7 +62,8 @@ impl ColourSlice {
 
 /// Locates one colour block in both slice-local and picture-global coordinates.
 ///
-/// Blocks are visited in row-major order. `local_y` addresses the temporary slice planes, while `global_y` addresses persistent picture history.
+/// Blocks are visited in row-major order. `local_y` addresses the temporary slice planes, while
+/// `global_y` addresses persistent picture history.
 #[derive(Clone, Copy)]
 pub struct BlockPosition {
     /// The containing slice and picture geometry.
@@ -63,7 +78,8 @@ pub struct BlockPosition {
 
 /// Tracks live allocations while a colour slice is decoded.
 ///
-/// Palette capacity changes during decoding, so budget values are copied with an updated capacity before each check.
+/// Palette capacity changes during decoding, so budget values are copied with an updated capacity
+/// before each check.
 #[derive(Clone, Copy)]
 pub struct ColourMemoryBudget {
     /// Live bytes owned outside the current colour decoder.
@@ -94,7 +110,8 @@ impl ColourMemoryBudget {
 
     /// Checks current plane, coefficient-history, and palette capacities.
     ///
-    /// This is equivalent to [`ColourMemoryBudget::check_with_additional`] with no prospective allocation.
+    /// This is equivalent to [`ColourMemoryBudget::check_with_additional`] with no prospective
+    /// allocation.
     pub fn check(
         self,
         planes: &[Vec<u8>; 3],
@@ -105,7 +122,9 @@ impl ColourMemoryBudget {
 
     /// Checks live colour storage plus a prospective byte allocation.
     ///
-    /// The account starts with `base_live_bytes`, adds all vector capacities and coefficient-history heap use, then adds palette capacity and `additional`. Overflow and totals above `limit` return [`DecodeError::ResourceLimit`].
+    /// The account starts with `base_live_bytes`, adds all vector capacities and
+    /// coefficient-history heap use, then adds palette capacity and `additional`. Overflow and
+    /// totals above `limit` return [`DecodeError::ResourceLimit`].
     pub fn check_with_additional(
         self,
         planes: &[Vec<u8>; 3],
@@ -147,9 +166,13 @@ impl ColourMemoryBudget {
 
 /// Decodes the colour stream of one record slice.
 ///
-/// Blocks are processed in row-major order and update `state`, which persists across record slices. The result retains padded planes and a record-relative bit endpoint for locating optional alpha syntax.
+/// Blocks are processed in row-major order and update `state`, which persists across record
+/// slices. The result retains padded planes and a record-relative bit endpoint for locating
+/// optional alpha syntax.
 ///
-/// Returns [`DecodeError`] for invalid block syntax or geometry, out-of-range copy sources or invalid prediction references, coefficient failures, allocation failures, or a memory-budget violation.
+/// Returns [`DecodeError`] for invalid block syntax or geometry, out-of-range copy sources or
+/// invalid prediction references, coefficient failures, allocation failures, or a memory-budget
+/// violation.
 pub fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
@@ -289,8 +312,8 @@ mod tests {
 
     #[test]
     fn palette_single_colour_expands_to_all_samples() {
-        // Palette method 4 is 00 10, followed by marker 1, variant 0,
-        // 0010 method, then palette marker/variant/prefix, then packed colours.
+        // Palette method 4 is 00 10, followed by marker 1, variant 0, 0010 method, then palette
+        // marker/variant/prefix, then packed colours.
         let data = record_data(&[0b0010_1000, 0x08, 0xd1, 0x59, 0xc0]);
         let record = view(&data);
         let mut state = ColourState::new(1, 1).unwrap();

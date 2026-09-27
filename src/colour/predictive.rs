@@ -1,12 +1,25 @@
 //! Reconstruct colour method 3 from predictions and coded coefficients.
 //!
-//! A predictive block has three transformed components: L, U+256, and V+256. L combines colour channels; U and V are differences. They are not the final G, B, R planes. Each component occupies a 16 by 16 workspace. A subdivision bit selects one width-16 argument or four width-8 arguments; each width-8 argument can contain one width-8 slot or four width-4 slots.
+//! A predictive block has three transformed components: L, U+256, and V+256. L combines colour
+//! channels; U and V are differences. They are not the final G, B, R planes. Each component
+//! occupies a 16 by 16 workspace. A subdivision bit selects one width-16 argument or four width-8
+//! arguments; each width-8 argument can contain one width-8 slot or four width-4 slots.
 //!
-//! For each argument, entropy decoding returns prediction modes and coefficient arrays. [`reconstruct_residual`](fn.reconstruct_residual.html) scales and inverse-transforms those coefficients. [`construct_colour_refs`](fn.construct_colour_refs.html) obtains corner-inclusive top and left arrays from picture banks and earlier samples in the component workspace. [`predict`](fn.predict.html) supplies estimates, and [`reconstruct_component`](fn.reconstruct_component.html) adds residuals and clips to the component range. Constructor arrays persist across slots because some selectors leave an extension unchanged.
+//! For each argument, entropy decoding returns prediction modes and coefficient arrays.
+//! [`reconstruct_residual`] scales and inverse-transforms those coefficients.
+//! [`construct_colour_refs`] obtains corner-inclusive top and left arrays from picture banks and
+//! earlier samples in the component workspace. [`predict`] supplies estimates, and
+//! [`reconstruct_component`] adds residuals and clips to the component range. Constructor arrays
+//! persist across slots because some selectors leave an extension unchanged.
 //!
-//! After all components finish, [`decode_block`](fn.decode_block.html) removes the difference biases and writes byte planes. Local variables called `red`, `green`, and `blue` are stored in plane order G, B, R; their names must not change the interpretation of the output. The crate page states the exact conversion order and gives a predictive-slot example.
+//! After all components finish, [`decode_block`] removes the difference biases and writes byte
+//! planes. Local variables called `red`, `green`, and `blue` are stored in plane order G, B, R;
+//! their names must not change the interpretation of the output. The crate page states the exact
+//! conversion order and gives a predictive-slot example.
 //!
-//! Errors are not rolled back. Reference banks and mode histories can change before coefficient or prediction failure. The ordinary cursor is synchronised to the contextual endpoint only after all components reconstruct successfully; picture samples are committed after conversion.
+//! Errors are not rolled back. Reference banks and mode histories can change before coefficient or
+//! prediction failure. The ordinary cursor is synchronised to the contextual endpoint only after
+//! all components reconstruct successfully; picture samples are committed after conversion.
 
 use crate::{
     bits::{BitReader, ContextBitReader},
@@ -37,14 +50,16 @@ use crate::{
 )]
 /// Returns the low byte of a wrapping signed reconstruction value.
 ///
-/// Predictive colour conversion deliberately keeps the original codec's narrowing behaviour instead of saturating the value.
+/// Predictive colour conversion deliberately keeps the original codec's narrowing behaviour
+/// instead of saturating the value.
 fn low_byte(value: i16) -> u8 {
     value as u8
 }
 
 /// Describes one plane passed from block layout to coefficient decoding.
 ///
-/// The request selects its history column, profile, subdivision, and record offset without duplicating the larger mutable decoder context.
+/// The request selects its history column, profile, subdivision, and record offset without
+/// duplicating the larger mutable decoder context.
 struct PlaneRequest {
     /// The zero-based SPI plane number.
     plane: usize,
@@ -60,9 +75,12 @@ struct PlaneRequest {
 
 /// Decodes all contextual components for one predictive colour plane.
 ///
-/// A subdivided plane carries four arguments with an 8-pixel maximum width; an undivided plane carries one 16-pixel argument. Each result is immediately reconstructed into its location in the 16 by 16 signed workspace.
+/// A subdivided plane carries four arguments with an 8-pixel maximum width; an undivided plane
+/// carries one 16-pixel argument. Each result is immediately reconstructed into its location in
+/// the 16 by 16 signed workspace.
 ///
-/// Entropy errors include component and record-relative bit context, while invalid reconstruction dimensions or prediction references return typed decoder errors.
+/// Entropy errors include component and record-relative bit context, while invalid reconstruction
+/// dimensions or prediction references return typed decoder errors.
 fn decode_predictive_plane(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,
@@ -104,9 +122,14 @@ fn decode_predictive_plane(
 
 /// Decodes one transform-based predictive colour block.
 ///
-/// The procedure lazily creates coefficient histories, updates picture-edge references, switches to the contextual accumulator, and decodes a luma-like plane plus two signed chroma planes. It then converts those signed values to the decoder's three byte planes with the codec's wrapping and clipping rules and commits them to slice and picture storage.
+/// The procedure lazily creates coefficient histories, updates picture-edge references, switches
+/// to the contextual accumulator, and decodes a luma-like plane plus two signed chroma planes. It
+/// then converts those signed values to the decoder's three byte planes with the codec's wrapping
+/// and clipping rules and commits them to slice and picture storage.
 ///
-/// On success, the ordinary bit reader advances to the contextual endpoint. On earlier failure it can remain at entry while banks and mode history have changed. Invalid history, syntax, prediction, transform, allocation, and memory-limit conditions return [`DecodeError`].
+/// On success, the ordinary bit reader advances to the contextual endpoint. On earlier failure it
+/// can remain at entry while banks and mode history have changed. Invalid history, syntax,
+/// prediction, transform, allocation, and memory-limit conditions return [`DecodeError`].
 pub(super) fn decode_block(
     bits: &mut BitReader<'_>,
     record: &Record<'_>,
@@ -221,7 +244,10 @@ pub(super) fn decode_block(
 
 /// Lazily allocates the three colour coefficient histories.
 ///
-/// History stride is four columns per picture block plus one boundary column. The prospective value and accounted neutral-flag storage is checked against the memory budget before allocation, actual capacities are checked afterwards, and skipped block rows are initialised when the first predictive block occurs below row zero.
+/// History stride is four columns per picture block plus one boundary column. The prospective
+/// value and accounted neutral-flag storage is checked against the memory budget before
+/// allocation, actual capacities are checked afterwards, and skipped block rows are initialised
+/// when the first predictive block occurs below row zero.
 fn ensure_histories(
     histories: &mut Option<[CoefficientHistory; 3]>,
     block_width: usize,
@@ -274,7 +300,8 @@ fn ensure_histories(
 
 /// Decodes one coefficient component and adds positional error context.
 ///
-/// The context identifies the plane argument and translates the contextual reader position from payload-relative to complete-record bits.
+/// The context identifies the plane argument and translates the contextual reader position from
+/// payload-relative to complete-record bits.
 fn decode_component(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,
@@ -294,13 +321,21 @@ fn decode_component(
 
 /// Write packed colour residual slots from decoded coefficients.
 ///
-/// `component.width` is 4,8,16, and `component.count` describes one or four slots. The caller passes a zeroed 256-value workspace. A small slot occupies `slot*width*width..(slot+1)*width*width`; this packed layout is distinct from its location in the 16 by 16 component plane.
+/// `component.width` is 4,8,16, and `component.count` describes one or four slots. The caller
+/// passes a zeroed 256-value workspace. A small slot occupies
+/// `slot*width*width..(slot+1)*width*width`; this packed layout is distinct from its location in
+/// the 16 by 16 component plane.
 ///
-/// Width 16 uses the matrix transform for any active callback, with scale 144 normally or 160 for alternate profile. Widths 4/8 map inactive, constant, and full callbacks to selectors 0,1,7 of [`reconstruct_component_residual`]. Inactive regions remain unchanged, so zero initialisation is required for zero residuals.
+/// Width 16 uses the matrix transform for any active callback, with scale 144 normally or 160 for
+/// alternate profile. Widths 4/8 map inactive, constant, and full callbacks to selectors 0,1,7 of
+/// [`reconstruct_component_residual`]. Inactive regions remain unchanged, so zero initialisation
+/// is required for zero residuals.
 ///
 /// # Errors
 ///
-/// Transform validation failures become coefficient reconstruction errors. Checks within each transform precede writes, but callers must not assume that an enclosing multi-slot operation rolls back earlier work.
+/// Transform validation failures become coefficient reconstruction errors. Checks within each
+/// transform precede writes, but callers must not assume that an enclosing multi-slot operation
+/// rolls back earlier work.
 fn reconstruct_residual(
     component: &ComponentResult,
     alternate_profile: bool,
@@ -342,13 +377,23 @@ fn reconstruct_residual(
 
 /// Reconstruct one argument into a 16 by 16 transformed component workspace.
 ///
-/// `position` is `(plane, argument, component_count)`. Plane 0 is L; planes 1/2 are U+256 and V+256. An undivided component has one argument at (0,0). Four-argument components place argument `a` at `((a&1)*8,(a>>1)*8)`. Width-4 slots add `((slot&1)*4,(slot>>1)*4)` to that origin; width-8 and width-16 slots add zero.
+/// `position` is `(plane, argument, component_count)`. Plane 0 is L; planes 1/2 are U+256 and
+/// V+256. An undivided component has one argument at (0,0). Four-argument components place
+/// argument `a` at `((a&1)*8,(a>>1)*8)`. Width-4 slots add `((slot&1)*4,(slot>>1)*4)` to that
+/// origin; width-8 and width-16 slots add zero.
 ///
-/// First reconstruct packed residual slots. For each slot, construct corner-inclusive edges, predict a square, and add its packed residual in `i32`. Clip to 0..255 for plane 0 or 0..511 for planes 1/2. Write each sample to `output[(origin_y+y)*16+origin_x+x]`; other workspace entries retain their values for later reference construction. Constructor arrays start at zero per argument and persist across its slots.
+/// First reconstruct packed residual slots. For each slot, construct corner-inclusive edges,
+/// predict a square, and add its packed residual in `i32`. Clip to 0..255 for plane 0 or 0..511
+/// for planes 1/2. Write each sample to `output[(origin_y+y)*16+origin_x+x]`; other workspace
+/// entries retain their values for later reference construction. Constructor arrays start at zero
+/// per argument and persist across its slots.
 ///
 /// # Errors
 ///
-/// Invalid component count or dimensions, missing constructor edges, or prediction/transform failures return [`DecodeError`]. Earlier slots can already have modified the workspace. Callers must provide the production argument/count geometry described above; this helper is not a general bounds-checked layout API.
+/// Invalid component count or dimensions, missing constructor edges, or prediction/transform
+/// failures return [`DecodeError`]. Earlier slots can already have modified the workspace. Callers
+/// must provide the production argument/count geometry described above; this helper is not a
+/// general bounds-checked layout API.
 fn reconstruct_component(
     component: &ComponentResult,
     alternate_profile: bool,
@@ -377,9 +422,9 @@ fn reconstruct_component(
     } else {
         0
     };
-    // The source stream keeps each component argument's constructor buffers
-    // alive across its slots. Some selectors write only part of a reference
-    // edge, so later slots can consume values written by earlier slots.
+    // The source stream keeps each component argument's constructor buffers alive across its
+    // slots. Some selectors write only part of a reference edge, so later slots can consume values
+    // written by earlier slots.
     let mut slot_left = [0_i16; 33];
     let mut slot_top = [0_i16; 33];
     for slot in 0..component.count {
@@ -424,7 +469,9 @@ fn reconstruct_component(
 
 /// Prepare corner-inclusive signed references for a width-8 slot.
 ///
-/// `position` is the sample origin inside the row-major 16 by 16 workspace. The caller supplies the quadrant corresponding to selector 0 through 3. Ranges below exclude their upper bound. A bank window includes a corner; internal edge samples start at output index one.
+/// `position` is the sample origin inside the row-major 16 by 16 workspace. The caller supplies
+/// the quadrant corresponding to selector 0 through 3. Ranges below exclude their upper bound. A
+/// bank window includes a corner; internal edge samples start at output index one.
 ///
 /// | Selector | Left edge | Top edge | Corner |
 /// | --- | --- | --- | --- |
@@ -433,11 +480,14 @@ fn reconstruct_component(
 /// | 2 | Copy left bank 8..25 | Read 16 internal top samples | Left window's first value supplies both |
 /// | 3 | Read 8 internal samples; repeat through 9..17 | Read 8 internal samples; repeat through 9..17 | Workspace sample at origin-17 supplies both |
 ///
-/// Only indices 0..17 are written. Larger entries retain their previous values. This is eight immediate neighbours and eight extension neighbours, plus the corner.
+/// Only indices 0..17 are written. Larger entries retain their previous values. This is eight
+/// immediate neighbours and eight extension neighbours, plus the corner.
 ///
 /// # Errors
 ///
-/// Invalid selector or a missing required internal origin returns invalid colour syntax. Callers must bound the workspace origin and all referenced samples; this private helper relies on the production quadrant geometry.
+/// Invalid selector or a missing required internal origin returns invalid colour syntax. Callers
+/// must bound the workspace origin and all referenced samples; this private helper relies on the
+/// production quadrant geometry.
 fn construct_colour_refs_eight(
     selector: usize,
     banks: (&[i16; 33], &[i16; 33]),
@@ -487,7 +537,8 @@ fn construct_colour_refs_eight(
 
 /// Reads already reconstructed internal edges from a 16 by 16 workspace.
 ///
-/// The reader records the component origin so width-four reference selectors can obtain left and top samples without repeating index calculations.
+/// The reader records the component origin so width-four reference selectors can obtain left and
+/// top samples without repeating index calculations.
 struct ColourEdgeReader<'data> {
     /// Borrows the partially reconstructed signed component.
     workspace: &'data [i16; 256],
@@ -502,7 +553,8 @@ struct ColourEdgeReader<'data> {
 impl ColourEdgeReader<'_> {
     /// Copies an internal left edge into a reference array.
     ///
-    /// Returns `false` when the component has no reconstructed pixels to its left. When `extend` is set, the final copied sample fills the remaining width-four reference extent.
+    /// Returns `false` when the component has no reconstructed pixels to its left. When `extend`
+    /// is set, the final copied sample fills the remaining width-four reference extent.
     fn vertical(&self, count: usize, extend: bool, out: &mut [i16; 33]) -> bool {
         if self.component_x == 0 {
             return false;
@@ -519,7 +571,8 @@ impl ColourEdgeReader<'_> {
 
     /// Copies an internal top edge into a reference array.
     ///
-    /// Returns `false` when the component has no reconstructed pixels above it. When `extend` is set, the final copied sample fills the remaining width-four reference extent.
+    /// Returns `false` when the component has no reconstructed pixels above it. When `extend` is
+    /// set, the final copied sample fills the remaining width-four reference extent.
     fn above(&self, count: usize, extend: bool, out: &mut [i16; 33]) -> bool {
         if self.component_y == 0 {
             return false;
@@ -537,7 +590,12 @@ impl ColourEdgeReader<'_> {
 
 /// Construct a slot's corner-inclusive signed edges.
 ///
-/// `workspace` is a partially reconstructed 16 by 16 component in row order. `position` gives the slot's sample origin inside it. `banks` are the containing block's left and top edges; `edges` are caller-owned arrays retained across slots of one argument. Width 16 copies complete banks. Width 8 uses selectors 0..3; width 4 uses selectors 0..15 in argument-major order (`argument*4+slot`). The following table describes width-4 writes; unspecified extension entries retain their previous values.
+/// `workspace` is a partially reconstructed 16 by 16 component in row order. `position` gives the
+/// slot's sample origin inside it. `banks` are the containing block's left and top edges; `edges`
+/// are caller-owned arrays retained across slots of one argument. Width 16 copies complete banks.
+/// Width 8 uses selectors 0..3; width 4 uses selectors 0..15 in argument-major order
+/// (`argument*4+slot`). The following table describes width-4 writes; unspecified extension
+/// entries retain their previous values.
 ///
 /// | Selector | Left preparation | Top preparation |
 /// | --- | --- | --- |
@@ -553,11 +611,18 @@ impl ColourEdgeReader<'_> {
 /// | 10 | Bank window 12..21 | 8 internal samples |
 /// | 12 | 8 internal samples | 8 internal samples |
 ///
-/// Ranges in this table are Rust half-open ranges. Copied windows start at output index zero. Internal samples start at index one. When one edge uses a bank window and the other is internal, that window supplies both corners. Selector 0 and width 16 preserve the left and top bank corners separately; they can differ. When both edges are internal, the sample at `origin-17` supplies the corner. Width-8 selectors use the same quadrant principle with 8 immediate samples and an extension through index 16; see [`construct_colour_refs_eight`].
+/// Ranges in this table are Rust half-open ranges. Copied windows start at output index zero.
+/// Internal samples start at index one. When one edge uses a bank window and the other is
+/// internal, that window supplies both corners. Selector 0 and width 16 preserve the left and top
+/// bank corners separately; they can differ. When both edges are internal, the sample at
+/// `origin-17` supplies the corner. Width-8 selectors use the same quadrant principle with 8
+/// immediate samples and an extension through index 16; see [`construct_colour_refs_eight`].
 ///
 /// # Errors
 ///
-/// Invalid width/selector or a missing required left/top origin returns invalid colour syntax. An error can follow a partial edge write. The caller must provide valid workspace coordinates for the selector; colour's internal edge reads rely on its argument geometry.
+/// Invalid width/selector or a missing required left/top origin returns invalid colour syntax. An
+/// error can follow a partial edge write. The caller must provide valid workspace coordinates for
+/// the selector; colour's internal edge reads rely on its argument geometry.
 fn construct_colour_refs(
     width: usize,
     selector: usize,
@@ -660,7 +725,8 @@ fn construct_colour_refs(
 
 /// Fills a block by repeating its top or left reference edge.
 ///
-/// Mode 0 repeats the top edge down every row; mode 1 repeats the left edge across every column. The caller passes a valid width no greater than 16.
+/// Mode 0 repeats the top edge down every row; mode 1 repeats the left edge across every column.
+/// The caller passes a valid width no greater than 16.
 fn predict_edge(mode: u8, width: usize, left: &[i16; 33], top: &[i16; 33], out: &mut [i16; 256]) {
     for row in 0..width {
         for col in 0..width {
@@ -675,7 +741,9 @@ fn predict_edge(mode: u8, width: usize, left: &[i16; 33], top: &[i16; 33], out: 
 
 /// Predict one colour slot from prepared corner-inclusive signed edges.
 ///
-/// The caller supplies width 4,8,16 and component-range values (0..255 or 0..511). Modes 0/1 copy top/left, 2 uses DC, and 17 uses corner-excluding planar references. The module and crate pages define the coordinate system and mode families.
+/// The caller supplies width 4,8,16 and component-range values (0..255 or 0..511). Modes 0/1 copy
+/// top/left, 2 uses DC, and 17 uses corner-excluding planar references. The module and crate pages
+/// define the coordinate system and mode families.
 ///
 /// | Width | Modes whose input edges are filtered here |
 /// | --- | --- |
@@ -683,13 +751,19 @@ fn predict_edge(mode: u8, width: usize, left: &[i16; 33], top: &[i16; 33], out: 
 /// | 8 | 3..8 |
 /// | 16 | 3..16 |
 ///
-/// Mode 8 therefore passes raw `left` to `predict_signed_side_directional` at width 4, despite that helper's parameter name. Filtering is this dispatcher's responsibility. Dedicated width-4 diagonal and angular paths retain their own endpoint rules. Modes 9..16 use a direction-table index, not the mode itself.
+/// Mode 8 therefore passes raw `left` to `predict_signed_side_directional` at width 4, despite
+/// that helper's parameter name. Filtering is this dispatcher's responsibility. Dedicated width-4
+/// diagonal and angular paths retain their own endpoint rules. Modes 9..16 use a direction-table
+/// index, not the mode itself.
 ///
-/// Writes the first `width*width` output entries in row order. Later entries and inputs are unchanged. The caller has already validated component dimensions; the direct-copy branches rely on that precondition.
+/// Writes the first `width*width` output entries in row order. Later entries and inputs are
+/// unchanged. The caller has already validated component dimensions; the direct-copy branches rely
+/// on that precondition.
 ///
 /// # Errors
 ///
-/// Unsupported mode combinations produce colour syntax errors. Checked predictor failures become [`DecodeError::Prediction`]. Prediction checks precede their writes.
+/// Unsupported mode combinations produce colour syntax errors. Checked predictor failures become
+/// [`DecodeError::Prediction`]. Prediction checks precede their writes.
 fn predict(
     mode: u8,
     width: usize,
@@ -792,7 +866,8 @@ fn predict(
 
 /// Converts an entropy-history failure into a colour coefficient error.
 ///
-/// Allocation failure remains classified as allocation; other entropy failures become coefficient syntax.
+/// Allocation failure remains classified as allocation; other entropy failures become coefficient
+/// syntax.
 fn coefficient_error(error: crate::entropy::EntropyError) -> DecodeError {
     crate::error::coefficient_history_error(error, "colour coefficient history")
 }

@@ -1,10 +1,19 @@
 //! Classify decode failures and retain the positions known at each layer.
 //!
-//! [`ErrorKind`] supplies stable names for callers and corpus expectations. Detailed error messages can give more information, but they are not the stable classification interface. [`DecodeError::kind`] follows nested position wrappers to the underlying category.
+//! [`ErrorKind`] supplies stable names for callers and corpus expectations. Detailed error
+//! messages can give more information, but they are not the stable classification interface.
+//! [`DecodeError::kind`] follows nested position wrappers to the underlying category.
 //!
-//! A component layer can report a contextual cursor, a block layer can report a block and ordinary cursor, and the record layer can add its sequence number. [`DecodeError::at`] retains each as a separate nested wrapper; it does not merge fields or replace earlier positions. Bit offsets start at the complete record, including all 14 header bytes. Block numbers are record-local and row-major. Colour component numbers are `plane*4+argument`; alpha uses the argument number.
+//! A component layer can report a contextual cursor, a block layer can report a block and ordinary
+//! cursor, and the record layer can add its sequence number. [`DecodeError::at`] retains each as a
+//! separate nested wrapper; it does not merge fields or replace earlier positions. Bit offsets
+//! start at the complete record, including all 14 header bytes. Block numbers are record-local and
+//! row-major. Colour component numbers are `plane*4+argument`; alpha uses the argument number.
 //!
-//! Unsupported selectors, colour modes, and recognised methods are distinct from malformed syntax. Internal wrappers do not guarantee that every low-level surface or predictor failure retains its own category: stream dispatchers can convert it to a syntax error. The crate page explains error positions and the limits of memory accounting.
+//! Unsupported selectors, colour modes, and recognised methods are distinct from malformed syntax.
+//! Internal wrappers do not guarantee that every low-level surface or predictor failure retains
+//! its own category: stream dispatchers can convert it to a syntax error. The crate page explains
+//! error positions and the limits of memory accounting.
 
 use std::error::Error;
 
@@ -40,7 +49,8 @@ pub enum ErrorKind {
 impl ErrorKind {
     /// Returns the stable lower-case name of this error category.
     ///
-    /// The returned names are suitable for logs and corpus manifests. They are independent of the more detailed human-readable error messages.
+    /// The returned names are suitable for logs and corpus manifests. They are independent of the
+    /// more detailed human-readable error messages.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Parse => "parse",
@@ -66,7 +76,10 @@ impl std::fmt::Display for ErrorKind {
 
 /// Identifies optional positions associated with a decode error.
 ///
-/// A record number is its zero-based order in the second container payload. A block number is local to that record, in row-major order. A bit position starts at the first bit of the complete `AA 02` record, including its six-byte prefix. A component number starts at zero; it identifies an alpha argument or a colour plane component, according to the stream.
+/// A record number is its zero-based order in the second container payload. A block number is
+/// local to that record, in row-major order. A bit position starts at the first bit of the
+/// complete `AA 02` record, including its six-byte prefix. A component number starts at zero; it
+/// identifies an alpha argument or a colour plane component, according to the stream.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ErrorContext {
     /// The zero-based record number, when known.
@@ -119,7 +132,8 @@ pub enum SyntaxError {
 
 /// Failures while entropy-coded coefficients are decoded or reconstructed.
 ///
-/// This distinction lets callers separate malformed coefficient syntax from an invalid inverse-transform request.
+/// This distinction lets callers separate malformed coefficient syntax from an invalid
+/// inverse-transform request.
 #[derive(Debug, Error)]
 pub enum CoefficientError {
     /// Wraps an entropy or coefficient-history syntax error.
@@ -132,7 +146,8 @@ pub enum CoefficientError {
 
 /// Wraps an error raised while building or applying spatial prediction.
 ///
-/// The source is type-erased so internal prediction implementations can change without expanding the public error API.
+/// The source is type-erased so internal prediction implementations can change without expanding
+/// the public error API.
 #[derive(Debug, Error)]
 #[error("prediction failed: {source}")]
 pub struct PredictionError {
@@ -143,7 +158,8 @@ pub struct PredictionError {
 
 /// Wraps an error raised while copying a motion-referenced block.
 ///
-/// The source normally describes invalid plane dimensions or an out-of-bounds source or destination rectangle.
+/// The source normally describes invalid plane dimensions or an out-of-bounds source or
+/// destination rectangle.
 #[derive(Debug, Error)]
 #[error("motion copy failed: {source}")]
 pub struct MotionError {
@@ -154,7 +170,8 @@ pub struct MotionError {
 
 /// A public SPI decoding failure.
 ///
-/// The [`DecodeError::At`] wrapper adds positions without changing the stable [`ErrorKind`] returned by [`DecodeError::kind`].
+/// The [`DecodeError::At`] wrapper adds positions without changing the stable [`ErrorKind`]
+/// returned by [`DecodeError::kind`].
 #[derive(Debug, Error)]
 pub enum DecodeError {
     /// Invalid container, picture-header, or record framing.
@@ -220,7 +237,8 @@ pub enum DecodeError {
 impl DecodeError {
     /// Returns the stable category for this failure.
     ///
-    /// Position wrappers are traversed recursively, so adding [`ErrorContext`] with [`DecodeError::at`] never changes the result.
+    /// Position wrappers are traversed recursively, so adding [`ErrorContext`] with
+    /// [`DecodeError::at`] never changes the result.
     pub const fn kind(&self) -> ErrorKind {
         match self {
             Self::Parse(_) => ErrorKind::Parse,
@@ -240,7 +258,8 @@ impl DecodeError {
 
     /// Attaches positional context to this failure.
     ///
-    /// Existing context is preserved as a nested source. Callers normally add information as an error crosses component, block, and record boundaries.
+    /// Existing context is preserved as a nested source. Callers normally add information as an
+    /// error crosses component, block, and record boundaries.
     pub fn at(self, context: ErrorContext) -> Self {
         Self::At {
             context,
@@ -251,7 +270,8 @@ impl DecodeError {
 
 /// Converts a coefficient-history error into its public decoder category.
 ///
-/// Allocation failure remains an allocation error associated with `resource`; every other entropy-history failure becomes coefficient syntax.
+/// Allocation failure remains an allocation error associated with `resource`; every other
+/// entropy-history failure becomes coefficient syntax.
 pub fn coefficient_history_error(
     error: crate::entropy::EntropyError,
     resource: &'static str,

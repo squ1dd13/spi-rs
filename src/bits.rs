@@ -1,10 +1,21 @@
 //! Read fields from a bounded byte array, most-significant bit first.
 //!
-//! [`BitReader`] is the ordinary cursor used for colour method codes, raw samples, and byte runs. It checks a requested field before reading it. A failed ordinary read leaves that field's start position unchanged; it does not undo earlier reads in the enclosing operation.
+//! [`BitReader`] is the ordinary cursor used for colour method codes, raw samples, and byte runs.
+//! It checks a requested field before reading it. A failed ordinary read leaves that field's start
+//! position unchanged; it does not undo earlier reads in the enclosing operation.
 //!
-//! [`ContextBitReader`] stores up to 32 unconsumed bits in the high end of an accumulator. Its byte offset records loaded bytes, while [`ContextBitReader::logical_bit`] subtracts the unconsumed bits. Refills replace the accumulator; entropy routines preserve and merge fragments explicitly. A contextual read can consume a prefix before it fails. This reader is part of the implemented syntax, not an arithmetic probability decoder.
+//! [`ContextBitReader`] stores up to 32 unconsumed bits in the high end of an accumulator. Its
+//! byte offset records loaded bytes, while [`ContextBitReader::logical_bit`] subtracts the
+//! unconsumed bits. Refills replace the accumulator; entropy routines preserve and merge fragments
+//! explicitly. A contextual read can consume a prefix before it fails. This reader is part of the
+//! implemented syntax, not an arithmetic probability decoder.
 //!
-//! Colour creates both readers over `Record::payload` and adds the 14-byte header offset when it reports positions. Alpha creates a contextual reader over `Record::data`, so its positions already include the header. Predictive and palette colour paths synchronise the ordinary cursor after successful contextual decoding; palette index validation can still fail after that synchronisation. See the crate page's “Bit readers and positions” section for the alpha hand-off.
+//! Colour creates both readers over `Record::payload` and adds the 14-byte header offset when it
+//! reports positions. Alpha creates a contextual reader over `Record::data`, so its positions
+//! already include the header. Predictive and palette colour paths synchronise the ordinary cursor
+//! after successful contextual decoding; palette index validation can still fail after that
+//! synchronisation. See the crate page's “Bit readers and positions” section for the alpha
+//! hand-off.
 
 use bitstream_io::{BigEndian, BitRead, BitReader as IoBitReader};
 use thiserror::Error;
@@ -24,7 +35,8 @@ pub enum BitError {
 
 /// Reads ordinary bounded syntax most-significant bit first.
 ///
-/// The wrapper tracks an explicit bit position and checks bounds before delegating to `bitstream-io`, which keeps failures non-consuming.
+/// The wrapper tracks an explicit bit position and checks bounds before delegating to
+/// `bitstream-io`, which keeps failures non-consuming.
 pub struct BitReader<'data> {
     /// Retains the original input for bounds checks.
     input: &'data [u8],
@@ -37,7 +49,8 @@ pub struct BitReader<'data> {
 impl<'data> BitReader<'data> {
     /// Creates an ordinary reader at the first bit of `input`.
     ///
-    /// SPI bit fields are read from the most significant bit of each byte to the least significant bit.
+    /// SPI bit fields are read from the most significant bit of each byte to the least significant
+    /// bit.
     pub(crate) fn new(input: &'data [u8]) -> Self {
         Self {
             input,
@@ -55,7 +68,8 @@ impl<'data> BitReader<'data> {
 
     /// Tests whether `count` bits remain in the input.
     ///
-    /// The check treats an overflowing byte-to-bit length as unreadable and does not modify reader state. It does not reject a zero count; typed read methods perform that validation.
+    /// The check treats an overflowing byte-to-bit length as unreadable and does not modify reader
+    /// state. It does not reject a zero count; typed read methods perform that validation.
     pub(crate) fn can_read(&self, count: u32) -> bool {
         self.input.len().checked_mul(8).is_some_and(|total| {
             self.bit_position <= total && count as usize <= total - self.bit_position
@@ -64,7 +78,9 @@ impl<'data> BitReader<'data> {
 
     /// Reads between 1 and 32 bits as a `u32`.
     ///
-    /// Bits are returned in stream order with the first bit becoming the most significant bit of the requested-width value. Invalid widths and truncated input return [`BitError`] without advancing the tracked position.
+    /// Bits are returned in stream order with the first bit becoming the most significant bit of
+    /// the requested-width value. Invalid widths and truncated input return [`BitError`] without
+    /// advancing the tracked position.
     pub(crate) fn read_bits(&mut self, count: u32) -> Result<u32, BitError> {
         if count == 0 || count > 32 {
             return Err(BitError::InvalidCount);
@@ -119,7 +135,10 @@ impl<'data> BitReader<'data> {
 
 /// Implements the 32-bit accumulator used by contextual SPI entropy syntax.
 ///
-/// Available bits are left-aligned in `accumulator`. Refills replace the accumulator with up to four subsequent bytes rather than appending to it; entropy routines save and merge fragments where the format requires that behaviour. Lookahead can inspect one bounded following byte through [`ContextBitReader::peek_next_byte`].
+/// Available bits are left-aligned in `accumulator`. Refills replace the accumulator with up to
+/// four subsequent bytes rather than appending to it; entropy routines save and merge fragments
+/// where the format requires that behaviour. Lookahead can inspect one bounded following byte
+/// through [`ContextBitReader::peek_next_byte`].
 #[derive(Debug, Clone)]
 pub struct ContextBitReader<'data> {
     /// Input bytes whose start defines logical bit zero: colour payload or complete alpha record.
@@ -150,7 +169,9 @@ impl<'data> ContextBitReader<'data> {
 
     /// Initialises the accumulator at an arbitrary logical bit position.
     ///
-    /// The operation requires four source bytes beginning at `bit / 8`. It loads them in big-endian order, discards the preceding bits within the first byte, and returns `false` without changing existing state when the position or lookahead is out of range.
+    /// The operation requires four source bytes beginning at `bit / 8`. It loads them in
+    /// big-endian order, discards the preceding bits within the first byte, and returns `false`
+    /// without changing existing state when the position or lookahead is out of range.
     pub(crate) fn initialise_at_bit(&mut self, bit: usize) -> bool {
         if self.size > usize::MAX / 8
             || bit > self.size * 8
@@ -173,14 +194,17 @@ impl<'data> ContextBitReader<'data> {
 
     /// Returns the logical bit position represented by the accumulator state.
     ///
-    /// The calculation subtracts valid, unconsumed accumulator bits from the end of the latest byte load.
+    /// The calculation subtracts valid, unconsumed accumulator bits from the end of the latest
+    /// byte load.
     pub(crate) fn logical_bit(&self) -> usize {
         self.byte_offset * 8 - self.available as usize
     }
 
     /// Replaces the accumulator with up to `count` subsequent bytes, left aligned.
     ///
-    /// `count` must be from 1 through 4. A final short refill succeeds when at least one byte remains and records only the bits that were loaded. Returns `false` without changing state for count zero, count above four, or no remaining byte.
+    /// `count` must be from 1 through 4. A final short refill succeeds when at least one byte
+    /// remains and records only the bits that were loaded. Returns `false` without changing state
+    /// for count zero, count above four, or no remaining byte.
     pub(crate) fn refill(&mut self, count: u32) -> bool {
         if count == 0 || count > 4 || self.byte_offset >= self.size {
             return false;
@@ -201,7 +225,9 @@ impl<'data> ContextBitReader<'data> {
 
     /// Discards `count` bits across as many accumulator refills as required.
     ///
-    /// A zero-width discard succeeds. The method returns `false` for widths above 32 or when the input ends before all requested bits are consumed; a partial failed operation can have advanced state.
+    /// A zero-width discard succeeds. The method returns `false` for widths above 32 or when the
+    /// input ends before all requested bits are consumed; a partial failed operation can have
+    /// advanced state.
     pub(crate) fn read_bits(&mut self, count: u32) -> bool {
         if count > 32 {
             return false;
@@ -225,7 +251,10 @@ impl<'data> ContextBitReader<'data> {
 
     /// Reads up to 32 bits across accumulator refills.
     ///
-    /// The first stream bit becomes the highest bit within the requested-width result. A zero-width request returns `Some(0)` without changing state. The method returns `None` without changing state for a width above 32; truncated input can fail after a partial advance.
+    /// The first stream bit becomes the highest bit within the requested-width result. A
+    /// zero-width request returns `Some(0)` without changing state. The method returns `None`
+    /// without changing state for a width above 32; truncated input can fail after a partial
+    /// advance.
     pub(crate) fn read_value(&mut self, count: u32) -> Option<u32> {
         if count > 32 {
             return None;

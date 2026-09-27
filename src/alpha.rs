@@ -438,17 +438,30 @@ impl AlphaEdgeReader<'_> {
 
 /// Prepare corner-inclusive byte references for one alpha slot.
 ///
-/// `position` is a sample origin in the temporary record `plane`, whose row spacing is `stride`. The caller retains the two output arrays across slots of one argument. Width-4 selectors 0..15 follow `argument*4+slot`; width-8 selectors 0..3 identify the four quadrants. Width 16 copies both complete banks. The width-4 selector rules match the table in [`construct_colour_refs`](../colour/predictive/fn.construct_colour_refs.html), except selector 0 copies all 33 entries rather than nine. Width-8 selector 0 also copies all 33 entries rather than 17.
+/// `position` is a sample origin in the temporary record `plane`, whose row spacing is `stride`.
+/// The caller retains the two output arrays across slots of one argument. Width-4 selectors 0..15
+/// follow `argument*4+slot`; width-8 selectors 0..3 identify the four quadrants. Width 16 copies
+/// both complete banks. The width-4 selector rules match the table in
+/// [`crate::colour::predictive::construct_colour_refs`], except selector 0 copies all 33 entries
+/// rather than nine. Width-8 selector 0 also copies all 33 entries rather than 17.
 ///
-/// Internal left/top values are read from previously reconstructed slots, not persistent picture storage. They start at output index one. A bank window supplies both corners when the other edge is internal. Selector 0 and width 16 preserve each bank's corner separately. With two internal edges, the sample immediately above-left supplies both corners. Some selectors preserve earlier extension entries; clearing the arrays for every slot would change reconstruction.
+/// Internal left/top values are read from previously reconstructed slots, not persistent picture
+/// storage. They start at output index one. A bank window supplies both corners when the other
+/// edge is internal. Selector 0 and width 16 preserve each bank's corner separately. With two
+/// internal edges, the sample immediately above-left supplies both corners. Some selectors
+/// preserve earlier extension entries; clearing the arrays for every slot would change
+/// reconstruction.
 ///
 /// # Errors
 ///
-/// Invalid width, selector, overflow, or checked edge accesses return [`DecodeError`], possibly after partial edge writes.
+/// Invalid width, selector, overflow, or checked edge accesses return [`DecodeError`], possibly
+/// after partial edge writes.
 ///
 /// # Panics
 ///
-/// The caller must provide a complete plane and a selector consistent with the reconstructed slot position. Direct corner accesses for internal selectors and some top slices can panic if those private-call invariants are violated.
+/// The caller must provide a complete plane and a selector consistent with the reconstructed slot
+/// position. Direct corner accesses for internal selectors and some top slices can panic if those
+/// private-call invariants are violated.
 fn construct_refs(
     width: usize,
     selector: usize,
@@ -547,7 +560,8 @@ fn construct_refs(
 
 /// Applies alpha prediction mode 4 in signed reference space.
 ///
-/// The predictor extends the top reference backwards from the left edge with the fixed inverse angle and then interpolates each row. Width must be 4, 8, or 16.
+/// The predictor extends the top reference backwards from the left edge with the fixed inverse
+/// angle and then interpolates each row. Width must be 4, 8, or 16.
 fn alpha_signed_four(
     left: &[i16; 33],
     top: &[i16; 33],
@@ -591,7 +605,8 @@ fn alpha_signed_four(
 
 /// Applies alpha prediction mode 7 in signed reference space.
 ///
-/// Width 4 uses the codec's dedicated inverse-angle interpolation. Widths 8 and 16 delegate to the general signed angular predictor with direction 11.
+/// Width 4 uses the codec's dedicated inverse-angle interpolation. Widths 8 and 16 delegate to the
+/// general signed angular predictor with direction 11.
 fn alpha_signed_seven(
     l: &[i16; 33],
     t: &[i16; 33],
@@ -632,9 +647,12 @@ fn alpha_signed_seven(
 
 /// Dispatches one alpha predictor over signed reference samples.
 ///
-/// Modes 0 and 1 copy edges, 2 is DC, 3 is diagonal, 4 through 8 use fixed directional formulae, 9 through 16 are angular, and 17 is planar. This helper does not clip; `predict` clips its signed result to bytes before `apply_component` adds residuals.
+/// Modes 0 and 1 copy edges, 2 is DC, 3 is diagonal, 4 through 8 use fixed directional formulae, 9
+/// through 16 are angular, and 17 is planar. This helper does not clip; `predict` clips its signed
+/// result to bytes before `apply_component` adds residuals.
 ///
-/// Invalid widths, unsupported modes, and lower-level prediction failures return invalid alpha syntax.
+/// Invalid widths, unsupported modes, and lower-level prediction failures return invalid alpha
+/// syntax.
 fn predict_signed_mode(
     left: &[i16; 33],
     top: &[i16; 33],
@@ -741,7 +759,8 @@ fn predict_signed_mode(
 
 /// Maps an alpha mode to a general signed angular direction and predicts it.
 ///
-/// Only modes with a direction-table entry are accepted. The output slice covers exactly `width * width` samples.
+/// Only modes with a direction-table entry are accepted. The output slice covers exactly `width *
+/// width` samples.
 fn predict_signed_angular_mode(
     left_reference: &[i16; 33],
     top_reference: &[i16; 33],
@@ -763,13 +782,22 @@ fn predict_signed_angular_mode(
 
 /// Predict a square from corner-inclusive byte banks.
 ///
-/// The caller supplies width 4,8,16 and prepared indices 0..=2*width. Width-4 modes 0,1,2,4,5,6,7,8,17 convert to [`PredictionReferences`]: drop the bank corner from the edge arrays, copy eight neighbours, and repeat the final value through the remaining capacity. Mode 4 uses the top corner; other such modes use the left corner. Both first-row flags remain false because bank preparation has already replaced unavailable references.
+/// The caller supplies width 4,8,16 and prepared indices 0..=2*width. Width-4 modes
+/// 0,1,2,4,5,6,7,8,17 convert to [`PredictionReferences`]: drop the bank corner from the edge
+/// arrays, copy eight neighbours, and repeat the final value through the remaining capacity. Mode
+/// 4 uses the top corner; other such modes use the left corner. Both first-row flags remain false
+/// because bank preparation has already replaced unavailable references.
 ///
-/// Other cases convert active references to `i16`. Filter width-4 modes 3/9, width-8 modes 3..8, and width-16 modes 3..16 before dispatch. Mode 2 uses unfiltered DC and mode 17 uses unfiltered planar references. Clip the signed result to 0..255 here, before residual addition. Writes only `out[..width*width]`; inputs and later output entries are unchanged.
+/// Other cases convert active references to `i16`. Filter width-4 modes 3/9, width-8 modes 3..8,
+/// and width-16 modes 3..16 before dispatch. Mode 2 uses unfiltered DC and mode 17 uses unfiltered
+/// planar references. Clip the signed result to 0..255 here, before residual addition. Writes only
+/// `out[..width*width]`; inputs and later output entries are unchanged.
 ///
 /// # Errors
 ///
-/// Unsupported modes, widths, or filter/prediction failures return [`DecodeError`]. The caller must enforce supported dimensions before the fixed-capacity slices are formed; this is a private production dispatcher.
+/// Unsupported modes, widths, or filter/prediction failures return [`DecodeError`]. The caller
+/// must enforce supported dimensions before the fixed-capacity slices are formed; this is a
+/// private production dispatcher.
 fn predict(
     left_u8: &[u8; 33],
     top_u8: &[u8; 33],
@@ -820,9 +848,15 @@ fn predict(
 
 /// Add decoded alpha values to a prepared byte prediction.
 ///
-/// The caller supplies width 4 or 8 in production and row-major arrays with capacity 256. Only the first `width*width` output entries are written; later entries are unchanged. The input arrays remain unchanged. No inverse transform or profile scaling occurs here.
+/// The caller supplies width 4 or 8 in production and row-major arrays with capacity 256. Only the
+/// first `width*width` output entries are written; later entries are unchanged. The input arrays
+/// remain unchanged. No inverse transform or profile scaling occurs here.
 ///
-/// Copy `coeff` into local signed storage. Mode 0 adds the preceding row's already accumulated value to each later row; mode 1 adds the preceding column's value across each row. These additions wrap in `i16`. Other modes leave values as decoded. Inactive callbacks contribute zero regardless of that local array; both active callback kinds use it directly. Add each residual to the byte prediction in `i32` and clip to 0..255.
+/// Copy `coeff` into local signed storage. Mode 0 adds the preceding row's already accumulated
+/// value to each later row; mode 1 adds the preceding column's value across each row. These
+/// additions wrap in `i16`. Other modes leave values as decoded. Inactive callbacks contribute
+/// zero regardless of that local array; both active callback kinds use it directly. Add each
+/// residual to the byte prediction in `i32` and clip to 0..255.
 fn apply_component(
     width: usize,
     mode: u8,
@@ -860,7 +894,8 @@ fn apply_component(
 
 /// Groups mutable state needed to decode one alpha block.
 ///
-/// The context is passed by value to keep the block procedure's argument list manageable while retaining distinct data and record lifetimes.
+/// The context is passed by value to keep the block procedure's argument list manageable while
+/// retaining distinct data and record lifetimes.
 struct AlphaBlockContext<'data, 'record> {
     /// Borrows the framed record for raw reads and diagnostics.
     record: &'data Record<'record>,
@@ -880,7 +915,8 @@ struct AlphaBlockContext<'data, 'record> {
 
 /// Locates one alpha block in diagnostic, slice, and picture coordinates.
 ///
-/// Pixel coordinates start at the left edge of the alpha plane and use its padded stride; block and bit values identify the syntax that produced the block.
+/// Pixel coordinates start at the left edge of the alpha plane and use its padded stride; block
+/// and bit values identify the syntax that produced the block.
 #[derive(Clone, Copy)]
 struct AlphaBlockPosition {
     /// The zero-based record-local block number.
@@ -901,13 +937,23 @@ struct AlphaBlockPosition {
 
 /// Reconstruct one alpha block from four coded arguments.
 ///
-/// The next bit must be one; zero or absent syntax returns an error. Each argument covers an 8 by 8 quadrant in top-left, top-right, bottom-left, bottom-right order and selects one width-8 slot or four width-4 slots. The caller has prepared picture banks and bounded the 16 by 16 destination in the temporary record plane.
+/// The next bit must be one; zero or absent syntax returns an error. Each argument covers an 8 by
+/// 8 quadrant in top-left, top-right, bottom-left, bottom-right order and selects one width-8 slot
+/// or four width-4 slots. The caller has prepared picture banks and bounded the 16 by 16
+/// destination in the temporary record plane.
 ///
-/// Decode mode and coefficient syntax, construct references from banks and earlier output, predict, then apply the coded values directly as residuals. There is no inverse transform. Each reconstructed slot is written immediately to the temporary plane. Edge constructor arrays are zeroed per argument and retained between its slots; coefficient-mode history updates during syntax decoding.
+/// Decode mode and coefficient syntax, construct references from banks and earlier output,
+/// predict, then apply the coded values directly as residuals. There is no inverse transform. Each
+/// reconstructed slot is written immediately to the temporary plane. Edge constructor arrays are
+/// zeroed per argument and retained between its slots; coefficient-mode history updates during
+/// syntax decoding.
 ///
 /// # Errors
 ///
-/// Missing initialisation, coefficient syntax, invalid references, or prediction failures return [`DecodeError`]. Earlier slots, banks, mode history, and the contextual cursor can already have changed. Coefficient errors include argument and complete-record bit context. Persistent picture samples are committed by the outer block procedure after success.
+/// Missing initialisation, coefficient syntax, invalid references, or prediction failures return
+/// [`DecodeError`]. Earlier slots, banks, mode history, and the contextual cursor can already have
+/// changed. Coefficient errors include argument and complete-record bit context. Persistent
+/// picture samples are committed by the outer block procedure after success.
 fn decode_alpha_predictive(
     record: &Record<'_>,
     state: &mut AlphaState,
@@ -957,8 +1003,8 @@ fn decode_alpha_predictive(
             })
         })?;
         let width = usize::from(component.width);
-        // Constructors may write only part of each side. Their
-        // remaining samples persist across slots in one argument.
+        // Constructors may write only part of each side. Their remaining samples persist across
+        // slots in one argument.
         let mut left = [0_u8; 33];
         let mut top = [0_u8; 33];
         for slot in 0..component.count {
@@ -1006,7 +1052,9 @@ fn decode_alpha_predictive(
 
 /// Prepares top and left alpha banks before one block is decoded.
 ///
-/// Top state comes from the preceding block row, the previous block in a slice's first row, or neutral 128. For later slice-local rows, a four-neighbour availability code extends unavailable portions of both banks.
+/// Top state comes from the preceding block row, the previous block in a slice's first row, or
+/// neutral 128. For later slice-local rows, a four-neighbour availability code extends unavailable
+/// portions of both banks.
 fn prepare_alpha_banks(
     state: &mut AlphaState,
     geometry: SliceGeometry,
@@ -1038,7 +1086,8 @@ fn prepare_alpha_banks(
 
 /// Commits one decoded alpha block to persistent picture and edge state.
 ///
-/// The block is copied from the temporary slice plane, marked available, and used to update the saved right edge, left bank, and current block-row bottom samples for subsequent blocks.
+/// The block is copied from the temporary slice plane, marked available, and used to update the
+/// saved right edge, left bank, and current block-row bottom samples for subsequent blocks.
 fn finish_alpha_block(
     state: &mut AlphaState,
     plane: &[u8],
@@ -1076,7 +1125,9 @@ fn finish_alpha_block(
 
 /// Reconstructs an alpha block by spatial or explicit motion copying.
 ///
-/// Method 0 selects the block above in the first column and the block to the left elsewhere. Method 1 reads an explicit vector. The source is copied within persistent padded picture history and then into the current slice plane.
+/// Method 0 selects the block above in the first column and the block to the left elsewhere.
+/// Method 1 reads an explicit vector. The source is copied within persistent padded picture
+/// history and then into the current slice plane.
 ///
 /// Out-of-range motion and plane-copy failures become contextual invalid-alpha errors.
 fn decode_alpha_motion(
@@ -1137,9 +1188,12 @@ fn decode_alpha_motion(
 
 /// Reads one byte-aligned raw alpha block.
 ///
-/// The procedure rounds the contextual endpoint up to a byte boundary, copies exactly 256 bytes in row-major order, then resets the accumulator after the raw bytes. Alignment bits are not required to be zero.
+/// The procedure rounds the contextual endpoint up to a byte boundary, copies exactly 256 bytes in
+/// row-major order, then resets the accumulator after the raw bytes. Alignment bits are not
+/// required to be zero.
 ///
-/// A range that overflows or exceeds the complete record returns a contextual truncation error without updating reader state.
+/// A range that overflows or exceeds the complete record returns a contextual truncation error
+/// without updating reader state.
 fn decode_raw_alpha_block(
     record: &Record<'_>,
     reader: &mut ContextBitReader<'_>,
@@ -1173,9 +1227,13 @@ fn decode_raw_alpha_block(
 
 /// Decodes and commits one alpha block selected by its method prefix.
 ///
-/// Methods 0 and 1 copy motion references, method 3 uses contextual predictive coding, and method 5 reads raw samples. Methods 2 and 4 are recognised but unsupported. Bank preparation changes state before dispatch. Successful reconstruction then updates saved edges and picture storage.
+/// Methods 0 and 1 copy motion references, method 3 uses contextual predictive coding, and method
+/// 5 reads raw samples. Methods 2 and 4 are recognised but unsupported. Bank preparation changes
+/// state before dispatch. Successful reconstruction then updates saved edges and picture storage.
 ///
-/// Method and motion failures use the block start bit. Predictive failures can use the current contextual endpoint, and raw failures use the aligned raw start. All use record-local block numbers and complete-record bit origins.
+/// Method and motion failures use the block start bit. Predictive failures can use the current
+/// contextual endpoint, and raw failures use the aligned raw start. All use record-local block
+/// numbers and complete-record bit origins.
 fn decode_alpha_block(
     context: AlphaBlockContext<'_, '_>,
     block_x: usize,
@@ -1247,7 +1305,9 @@ fn decode_alpha_block(
 
 /// Finalises availability and top banks after one alpha block row.
 ///
-/// The current availability vector becomes history for the next row. Each 33-sample top bank receives a corner and 32 samples from the completed bottom edge, with right-side values clamped to the final visible picture sample.
+/// The current availability vector becomes history for the next row. Each 33-sample top bank
+/// receives a corner and 32 samples from the completed bottom edge, with right-side values clamped
+/// to the final visible picture sample.
 fn finish_alpha_row(state: &mut AlphaState, geometry: SliceGeometry, current: &[u8]) {
     state.block_available.copy_from_slice(current);
     for x in 0..geometry.block_width {
@@ -1271,9 +1331,14 @@ fn finish_alpha_row(state: &mut AlphaState, geometry: SliceGeometry, current: &[
 
 /// Decodes the alpha stream that follows one record's colour stream.
 ///
-/// Alpha begins at the next byte boundary after `colour_end_bit`. The decoder creates contextual coefficient history and a padded temporary plane, then visits blocks in row-major order while maintaining picture-wide motion and edge state. The returned endpoint is relative to the complete record.
+/// Alpha begins at the next byte boundary after `colour_end_bit`. The decoder creates contextual
+/// coefficient history and a padded temporary plane, then visits blocks in row-major order while
+/// maintaining picture-wide motion and edge state. The returned endpoint is relative to the
+/// complete record.
 ///
-/// The contextual reader requires a four-byte initial window. Invalid geometry, insufficient input, malformed or unsupported methods, invalid references, coefficient failures, and allocation failures return [`DecodeError`].
+/// The contextual reader requires a four-byte initial window. Invalid geometry, insufficient
+/// input, malformed or unsupported methods, invalid references, coefficient failures, and
+/// allocation failures return [`DecodeError`].
 pub fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
