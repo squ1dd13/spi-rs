@@ -1085,8 +1085,9 @@ pub fn decode_slice(
         .ok_or_else(|| allocation("alpha coefficient history"))?;
     let rows =
         u16::try_from(geometry.block_rows).map_err(|_| allocation("alpha coefficient history"))?;
-    let mut history = CoefficientHistory::new(history_stride, rows)
-        .map_err(|_| invalid("coefficient history allocation failed"))?;
+    let mut history = CoefficientHistory::new(history_stride, rows).map_err(|error| {
+        crate::error::coefficient_history_error(error, "alpha coefficient history")
+    })?;
     let stride = state.stride;
     let out_rows = geometry
         .block_rows

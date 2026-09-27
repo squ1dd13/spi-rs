@@ -44,7 +44,7 @@ impl std::fmt::Display for ErrorKind {
     }
 }
 
-/// Optional positions for a decode error. A record number is its zero-based order in the second container payload. A block number is local to that record, in row-major order. A bit position starts at the first bit of the complete `AA 02` record, including its six-byte prefix. A component number starts at zero and refers to an internal plane.
+/// Optional positions for a decode error. A record number is its zero-based order in the second container payload. A block number is local to that record, in row-major order. A bit position starts at the first bit of the complete `AA 02` record, including its six-byte prefix. A component number starts at zero; it identifies an alpha argument or a colour plane component, according to the stream.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ErrorContext {
     pub record: Option<usize>,
@@ -158,5 +158,40 @@ impl DecodeError {
             context,
             source: Box::new(self),
         }
+    }
+}
+
+pub fn coefficient_history_error(
+    error: crate::entropy::EntropyError,
+    resource: &'static str,
+) -> DecodeError {
+    match error {
+        crate::entropy::EntropyError::AllocationFailure => DecodeError::Allocation { resource },
+        other => DecodeError::Coefficients(CoefficientError::Syntax(Box::new(other))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coefficient_history_errors_keep_their_category() {
+        assert_eq!(
+            coefficient_history_error(
+                crate::entropy::EntropyError::AllocationFailure,
+                "coefficient history",
+            )
+            .kind(),
+            ErrorKind::Allocation
+        );
+        assert_eq!(
+            coefficient_history_error(
+                crate::entropy::EntropyError::InvalidHistory,
+                "coefficient history",
+            )
+            .kind(),
+            ErrorKind::Coefficients
+        );
     }
 }

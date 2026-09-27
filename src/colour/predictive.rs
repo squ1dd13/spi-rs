@@ -661,5 +661,5 @@ fn predict(
 }
 
 fn coefficient_error(error: crate::entropy::EntropyError) -> DecodeError {
-    DecodeError::Coefficients(CoefficientError::Syntax(Box::new(error)))
+    crate::error::coefficient_history_error(error, "colour coefficient history")
 }
