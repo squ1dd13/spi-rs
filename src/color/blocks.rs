@@ -60,7 +60,10 @@ pub(super) fn decode_slice(
         {
             for (plane, history) in histories.iter_mut().enumerate() {
                 history
-                    .begin_block_row(local_y as u16, plane != 0)
+                    .begin_block_row(
+                        u16::try_from(local_y).expect("block row fits history"),
+                        plane != 0,
+                    )
                     .map_err(|error| {
                         DecodeError::Coefficients(crate::error::CoefficientError::Syntax(Box::new(
                             error,
@@ -216,8 +219,8 @@ fn read_method(bits: &mut BitReader<'_>) -> Result<u8, DecodeError> {
         return Ok(1);
     }
     Ok(bits
-        .read_bits(2)
-        .map_err(|_| invalid("truncated block method"))? as u8
+        .read_u8(2)
+        .map_err(|_| invalid("truncated block method"))?
         + 2)
 }
 
@@ -256,9 +259,9 @@ fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
         };
         let code = (1_u32 << zeros) + suffix;
         let signed = if code & 1 != 0 {
-            -((code >> 1) as i64)
+            -i64::from(code >> 1)
         } else {
-            (code >> 1) as i64
+            i64::from(code >> 1)
         };
         *value = i32::try_from(
             signed
@@ -281,7 +284,7 @@ fn raw(
 ) -> Result<(), DecodeError> {
     let pad = (8 - bits.bit_position() % 8) % 8;
     if pad != 0 {
-        bits.read_bits(pad as u32)
+        bits.read_bits(u32::try_from(pad).expect("padding has at most seven bits"))
             .map_err(|_| invalid("truncated raw block alignment"))?;
     }
     let mut scratch = [[0_u8; 256]; 3];
@@ -330,7 +333,8 @@ fn residual(
                 } else if value < -2 {
                     value += 260;
                 }
-                scratch[p][i] = value.clamp(0, 255) as u8;
+                scratch[p][i] =
+                    u8::try_from(value.clamp(0, 255)).expect("clamped sample fits in u8");
             }
         }
     }
@@ -432,7 +436,8 @@ fn palette_block(
         })?;
         let final_bit = reader.logical_bit();
         while bits.bit_position() < final_bit {
-            let take = (final_bit - bits.bit_position()).min(32) as u32;
+            let take = u32::try_from((final_bit - bits.bit_position()).min(32))
+                .expect("read length is at most 32 bits");
             bits.read_bits(take)
                 .map_err(|_| invalid("palette index reader passed stream end"))?;
         }

@@ -145,8 +145,8 @@ fn read_method(reader: &mut ContextBitReader<'_>) -> Result<u8, DecodeError> {
         return Ok(1);
     }
     Ok(2 + reader
-        .read_value(2)
-        .ok_or_else(|| invalid("truncated block method"))? as u8)
+        .read_value_u8(2)
+        .ok_or_else(|| invalid("truncated block method"))?)
 }
 
 fn read_motion(reader: &mut ContextBitReader<'_>) -> Result<Motion, DecodeError> {
@@ -182,9 +182,9 @@ fn read_motion(reader: &mut ContextBitReader<'_>) -> Result<Motion, DecodeError>
         };
         let code = (1_u32 << zeros) + suffix;
         let decoded = if code & 1 != 0 {
-            -((code / 2) as i32)
+            -i32::try_from(code / 2).expect("motion magnitude fits in i32")
         } else {
-            (code / 2) as i32
+            i32::try_from(code / 2).expect("motion magnitude fits in i32")
         };
         *value = decoded.saturating_mul(16);
     }
@@ -197,7 +197,10 @@ fn read_motion(reader: &mut ContextBitReader<'_>) -> Result<Motion, DecodeError>
 fn transition(code: u16, top: &mut [u8; 33], left: &mut [u8; 33]) {
     let t = *top;
     let l = *left;
-    let avg = |a: u8, b: u8| ((u16::from(a) + u16::from(b) + 1) >> 1) as u8;
+    let avg = |a: u8, b: u8| {
+        u8::try_from((u16::from(a) + u16::from(b) + 1) >> 1)
+            .expect("average of two bytes fits in u8")
+    };
     match code {
         0x0000 => {
             top.fill(128);
@@ -477,17 +480,23 @@ fn predict(
             };
             for i in (last as isize..=-1_isize).rev() {
                 sum += 630;
-                main[(32_isize + i) as usize] = l[(sum >> 8) as usize];
+                main[usize::try_from(32_isize + i).expect("angular index is nonnegative")] =
+                    l[usize::try_from(sum >> 8).expect("angular index is nonnegative")];
             }
             for r in 0..width {
-                let d = -((r as i32 + 1) * 13);
+                let d = -((i32::try_from(r).expect("block width is at most 16") + 1) * 13);
                 let integer = d >> 5;
                 let frac = d & 31;
                 for c in 0..width {
-                    let i = (32 + c as i32 + integer + 1) as usize;
-                    signed[r * width + c] =
-                        (((32 - frac) * i32::from(main[i]) + frac * i32::from(main[i + 1]) + 16)
-                            >> 5) as i16;
+                    let i = usize::try_from(
+                        32 + i32::try_from(c).expect("block width is at most 16") + integer + 1,
+                    )
+                    .expect("angular index is nonnegative");
+                    signed[r * width + c] = i16::try_from(
+                        ((32 - frac) * i32::from(main[i]) + frac * i32::from(main[i + 1]) + 16)
+                            >> 5,
+                    )
+                    .expect("interpolated byte fits in i16");
                 }
             }
         }
@@ -495,11 +504,13 @@ fn predict(
             for r in 0..width {
                 let d = (r + 1) * 13;
                 let i = d >> 5;
-                let f = (d & 31) as i32;
+                let f = i32::try_from(d & 31).expect("fraction is at most 31");
                 for c in 0..width {
                     let n = c + i + 1;
-                    signed[r * width + c] =
-                        (((32 - f) * i32::from(t[n]) + f * i32::from(t[n + 1]) + 16) >> 5) as i16;
+                    signed[r * width + c] = i16::try_from(
+                        ((32 - f) * i32::from(t[n]) + f * i32::from(t[n + 1]) + 16) >> 5,
+                    )
+                    .expect("interpolated byte fits in i16");
                 }
             }
         }
@@ -526,19 +537,27 @@ fn predict(
                     main[16 + i] = l[i];
                 }
                 for i in (-16_isize..=-1_isize).rev() {
-                    let side = ((-i * 630 + 128) >> 8) as usize;
-                    main[(16_isize + i) as usize] = t[side.min(16) + 1];
+                    let side = usize::try_from((-i * 630 + 128) >> 8)
+                        .expect("angular side index is nonnegative");
+                    main[usize::try_from(16_isize + i).expect("angular index is nonnegative")] =
+                        t[side.min(16) + 1];
                 }
                 for r in 0..4 {
                     for c in 0..4 {
-                        let d = -((c as i32 + 1) * 13);
+                        let d = -((i32::try_from(c).expect("column is below four") + 1) * 13);
                         let integer = -((-d + 31) / 32);
                         let frac = d - integer * 32;
-                        let idx = (16 + r as i32 + integer + 1) as usize;
-                        signed[r * 4 + c] = (((32 - frac) * i32::from(main[idx])
-                            + frac * i32::from(main[idx + 1])
-                            + 16)
-                            >> 5) as i16;
+                        let idx = usize::try_from(
+                            16 + i32::try_from(r).expect("row is below four") + integer + 1,
+                        )
+                        .expect("angular index is nonnegative");
+                        signed[r * 4 + c] = i16::try_from(
+                            ((32 - frac) * i32::from(main[idx])
+                                + frac * i32::from(main[idx + 1])
+                                + 16)
+                                >> 5,
+                        )
+                        .expect("interpolated byte fits in i16");
                     }
                 }
             } else {
@@ -551,9 +570,11 @@ fn predict(
                 for c in 0..width {
                     let d = (c + 1) * 13;
                     let i = r + (d >> 5) + 1;
-                    let f = (d & 31) as i32;
-                    signed[r * width + c] =
-                        (((32 - f) * i32::from(l[i]) + f * i32::from(l[i + 1]) + 16) >> 5) as i16;
+                    let f = i32::try_from(d & 31).expect("fraction is at most 31");
+                    signed[r * width + c] = i16::try_from(
+                        ((32 - f) * i32::from(l[i]) + f * i32::from(l[i + 1]) + 16) >> 5,
+                    )
+                    .expect("interpolated byte fits in i16");
                 }
             }
         }
@@ -575,7 +596,7 @@ fn predict(
         _ => return Err(invalid("unsupported prediction mode")),
     }
     for i in 0..width * width {
-        out[i] = signed[i].clamp(0, 255) as u8;
+        out[i] = u8::try_from(signed[i].clamp(0, 255)).expect("clamped sample fits in u8");
     }
     Ok(())
 }
@@ -610,7 +631,8 @@ fn apply_component(
         } else {
             i32::from(values[i])
         };
-        output[i] = (i32::from(prediction[i]) + residual).clamp(0, 255) as u8;
+        output[i] = u8::try_from((i32::from(prediction[i]) + residual).clamp(0, 255))
+            .expect("clamped sample fits in u8");
     }
 }
 
@@ -676,7 +698,7 @@ pub(crate) fn decode_slice(
     current.resize(geometry.block_width, 0);
     for block_y in 0..geometry.block_rows {
         history
-            .begin_alpha_block_row(block_y as u16)
+            .begin_alpha_block_row(u16::try_from(block_y).expect("block row fits history"))
             .map_err(|_| invalid("coefficient row history failed"))?;
         let absolute_row = geometry.absolute_block_row + block_y;
         previous.copy_from_slice(&state.block_available);
@@ -694,11 +716,11 @@ pub(crate) fn decode_slice(
             let top_available = absolute_row != 0 && previous[block_x] != 0;
             let left_available = block_x != 0 && current[block_x - 1] != 0;
             if block_y != 0 {
-                let code = ((block_x > 0 && previous[block_x - 1] != 0) as u16) << 12
-                    | ((block_x + 1 < geometry.block_width && previous[block_x + 1] != 0) as u16)
+                let code = u16::from(block_x > 0 && previous[block_x - 1] != 0) << 12
+                    | u16::from(block_x + 1 < geometry.block_width && previous[block_x + 1] != 0)
                         << 8
-                    | (top_available as u16) << 4
-                    | left_available as u16;
+                    | u16::from(top_available) << 4
+                    | u16::from(left_available);
                 transition(code, &mut state.top_bank, &mut state.left_bank);
             } else if block_x == 0 {
                 state.left_bank.fill(128);
@@ -772,7 +794,10 @@ pub(crate) fn decode_slice(
                             &mut history,
                             ComponentRequest {
                                 argument,
-                                horizontal_offset: (block_x * 16) as u16,
+                                horizontal_offset: {
+                                    let bytes = (block_x * 16).to_le_bytes();
+                                    u16::from_le_bytes([bytes[0], bytes[1]])
+                                },
                                 maximum_width: 8,
                                 fixed_width: 0,
                                 color_long_symbols: false,

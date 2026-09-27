@@ -16,6 +16,26 @@ fn valid_width(w: usize) -> bool {
     w == 4 || w == 8 || w == 16
 }
 
+fn byte_sample(value: u32) -> u8 {
+    u8::try_from(value).expect("weighted average of bytes fits in u8")
+}
+
+fn byte_sample_signed(value: i32) -> u8 {
+    u8::try_from(value).expect("weighted average of bytes fits in u8")
+}
+
+fn signed_sample(value: i32) -> i16 {
+    i16::try_from(value).expect("weighted average of signed samples fits in i16")
+}
+
+fn block_index(value: i32) -> usize {
+    usize::try_from(value).expect("validated prediction index is nonnegative")
+}
+
+fn block_coordinate(value: usize) -> i32 {
+    i32::try_from(value).expect("prediction coordinate is at most 32")
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PredictionReferences {
     pub top_left: u8,
@@ -113,7 +133,9 @@ pub fn build_prediction_references(
 }
 
 pub fn filter3(a: u8, b: u8, c: u8) -> u8 {
-    ((u16::from(a) + 2 * u16::from(b) + u16::from(c) + 2) >> 2) as u8
+    byte_sample(u32::from(
+        (u16::from(a) + 2 * u16::from(b) + u16::from(c) + 2) >> 2,
+    ))
 }
 
 fn edge_filter(references: &PredictionReferences, top: bool, index: usize, width: usize) -> u8 {
@@ -172,24 +194,26 @@ pub fn predict_alpha(
                 1 => references.left[row],
                 2 if width == 8 && references.first_row && first_row_top_unavailable => 0,
                 2 => {
-                    let mut sum = width as u32;
+                    let mut sum = u32::try_from(width).expect("validated width is at most 16");
                     for i in 0..width {
                         sum += u32::from(references.top[i]) + u32::from(references.left[i]);
                     }
-                    let dc = sum / (2 * width) as u32;
+                    let dc = sum / u32::try_from(2 * width).expect("validated width is at most 16");
                     if width != 4 {
-                        dc as u8
+                        byte_sample(dc)
                     } else if row == 0 && col == 0 {
-                        ((3 * (u32::from(references.left[0]) + u32::from(references.top[0]))
-                            + 2 * dc
-                            + 4)
-                            >> 3) as u8
+                        byte_sample(
+                            (3 * (u32::from(references.left[0]) + u32::from(references.top[0]))
+                                + 2 * dc
+                                + 4)
+                                >> 3,
+                        )
                     } else if row == 0 {
-                        ((3 * u32::from(references.top[col]) + 5 * dc + 4) >> 3) as u8
+                        byte_sample((3 * u32::from(references.top[col]) + 5 * dc + 4) >> 3)
                     } else if col == 0 {
-                        ((3 * u32::from(references.left[row]) + 5 * dc + 4) >> 3) as u8
+                        byte_sample((3 * u32::from(references.left[row]) + 5 * dc + 4) >> 3)
                     } else {
-                        dc as u8
+                        byte_sample(dc)
                     }
                 }
                 3 if references.first_row && first_row_top_unavailable => 0,
@@ -230,30 +254,37 @@ pub fn predict_alpha(
                     let mut sum = 128_i32;
                     for n in 1..=width {
                         sum += 630;
-                        let idx = (sum >> 8) as usize;
+                        let idx = usize::try_from(sum >> 8).expect("angular index is nonnegative");
                         main[origin - n] = if idx == 0 {
                             references.top_left
                         } else {
                             references.left[idx - 1]
                         };
                     }
-                    let d = -((row as i32 + 1) * 13);
+                    let d = -((block_coordinate(row) + 1) * 13);
                     let integer = d >> 5;
                     let frac = d & 31;
-                    let i = (col as i32) + integer + 1;
-                    (((32 - frac) * i32::from(main[(origin as i32 + i) as usize])
-                        + frac * i32::from(main[(origin as i32 + i + 1) as usize])
-                        + 16)
-                        >> 5) as u8
+                    let i = block_coordinate(col) + integer + 1;
+                    byte_sample_signed(
+                        ((32 - frac) * i32::from(main[block_index(block_coordinate(origin) + i)])
+                            + frac
+                                * i32::from(main[block_index(block_coordinate(origin) + i + 1)])
+                            + 16)
+                            >> 5,
+                    )
                 }
                 5 => {
                     let d = (row + 1) * 13;
                     let i = col + (d >> 5);
                     let f = d & 31;
-                    ((((32 - f) as u32) * u32::from(edge_filter(references, true, i, width))
-                        + (f as u32) * u32::from(edge_filter(references, true, i + 1, width))
-                        + 16)
-                        >> 5) as u8
+                    byte_sample(
+                        ((u32::try_from(32 - f).expect("fraction is at most 31"))
+                            * u32::from(edge_filter(references, true, i, width))
+                            + u32::try_from(f).expect("fraction is nonnegative")
+                                * u32::from(edge_filter(references, true, i + 1, width))
+                            + 16)
+                            >> 5,
+                    )
                 }
                 6 => {
                     let i = col + row;
@@ -283,23 +314,30 @@ pub fn predict_alpha(
                         let idx = ((n * 630 + 128) >> 8).saturating_sub(1).min(16);
                         main[origin - n] = edge_filter(references, true, idx, width);
                     }
-                    let d = -((col as i32 + 1) * 13);
+                    let d = -((block_coordinate(col) + 1) * 13);
                     let integer = if d < 0 { -((-d + 31) / 32) } else { d / 32 };
                     let frac = d - integer * 32;
-                    let i = row as i32 + integer + 1;
-                    (((32 - frac) * i32::from(main[(origin as i32 + i) as usize])
-                        + frac * i32::from(main[(origin as i32 + i + 1) as usize])
-                        + 16)
-                        >> 5) as u8
+                    let i = block_coordinate(row) + integer + 1;
+                    byte_sample_signed(
+                        ((32 - frac) * i32::from(main[block_index(block_coordinate(origin) + i)])
+                            + frac
+                                * i32::from(main[block_index(block_coordinate(origin) + i + 1)])
+                            + 16)
+                            >> 5,
+                    )
                 }
                 8 => {
                     let d = (col + 1) * 13;
                     let i = row + (d >> 5);
                     let f = d & 31;
-                    ((((32 - f) as u32) * u32::from(edge_filter(references, false, i, width))
-                        + (f as u32) * u32::from(edge_filter(references, false, i + 1, width))
-                        + 16)
-                        >> 5) as u8
+                    byte_sample(
+                        (u32::try_from(32 - f).expect("fraction is at most 31")
+                            * u32::from(edge_filter(references, false, i, width))
+                            + u32::try_from(f).expect("fraction is nonnegative")
+                                * u32::from(edge_filter(references, false, i + 1, width))
+                            + 16)
+                            >> 5,
+                    )
                 }
                 17 => {
                     let e = width - 1;
@@ -313,11 +351,18 @@ pub fn predict_alpha(
                     } else {
                         references.top[col]
                     };
-                    let h = (e - col) as u32 * u32::from(references.left[row])
-                        + (col + 1) as u32 * u32::from(te);
-                    let v = (e - row) as u32 * u32::from(tv)
-                        + (row + 1) as u32 * u32::from(references.left[e]);
-                    ((h + v + width as u32) / (2 * width) as u32) as u8
+                    let h = u32::try_from(e - col).expect("validated width is at most 16")
+                        * u32::from(references.left[row])
+                        + u32::try_from(col + 1).expect("validated width is at most 16")
+                            * u32::from(te);
+                    let v = u32::try_from(e - row).expect("validated width is at most 16")
+                        * u32::from(tv)
+                        + u32::try_from(row + 1).expect("validated width is at most 16")
+                            * u32::from(references.left[e]);
+                    byte_sample(
+                        (h + v + u32::try_from(width).expect("validated width is at most 16"))
+                            / u32::try_from(2 * width).expect("validated width is at most 16"),
+                    )
                 }
                 _ => return Err(PredictionError::InvalidMode),
             };
@@ -369,7 +414,7 @@ pub fn predict_signed_wide_angular_reference_a(
     let mut main = [0_i16; 65];
     const ORIGIN: i32 = 32;
     for i in 0..33 {
-        main[(ORIGIN + i as i32) as usize] = filtered_top[i];
+        main[block_index(ORIGIN + block_coordinate(i))] = filtered_top[i];
     }
     let last_negative = match width {
         4 => -2,
@@ -380,18 +425,18 @@ pub fn predict_signed_wide_angular_reference_a(
     for offset in 1..=(-last_negative) {
         let index = -offset;
         inverse_sum += 630;
-        main[(ORIGIN + index) as usize] = filtered_left[(inverse_sum >> 8) as usize];
+        main[block_index(ORIGIN + index)] = filtered_left[block_index(inverse_sum >> 8)];
     }
     for row in 0..width {
-        let displacement = -((row as i32 + 1) * 13);
+        let displacement = -((block_coordinate(row) + 1) * 13);
         let integer = displacement >> 5;
         let fraction = displacement & 31;
         for col in 0..width {
-            let first = ORIGIN + col as i32 + integer + 1;
-            let value = (32 - fraction) * i32::from(main[first as usize])
-                + fraction * i32::from(main[first as usize + 1])
+            let first = block_index(ORIGIN + block_coordinate(col) + integer + 1);
+            let value = (32 - fraction) * i32::from(main[first])
+                + fraction * i32::from(main[first + 1])
                 + 16;
-            output[row * width + col] = (value >> 5) as i16;
+            output[row * width + col] = signed_sample(value >> 5);
         }
     }
     Ok(())
@@ -430,26 +475,26 @@ pub fn predict_signed_left_edge_directional(
     }
     const ORIGIN: i32 = 32;
     let mut main = [0_i16; 65];
-    main[ORIGIN as usize] = filtered_top[0];
+    main[block_index(ORIGIN)] = filtered_top[0];
     for i in 0..32 {
-        main[ORIGIN as usize + i + 1] = filtered_left[i + 1];
+        main[block_index(ORIGIN) + i + 1] = filtered_left[i + 1];
     }
-    for index in -(width as i32)..0 {
-        let side_index = (((-index * 630 + 128) >> 8) as usize)
+    for index in -block_coordinate(width)..0 {
+        let side_index = block_index((-index * 630 + 128) >> 8)
             .saturating_sub(1)
             .min(31);
-        main[(ORIGIN + index) as usize] = filtered_top[side_index + 1];
+        main[block_index(ORIGIN + index)] = filtered_top[side_index + 1];
     }
     for row in 0..width {
         for col in 0..width {
-            let displacement = -((col as i32 + 1) * 13);
+            let displacement = -((block_coordinate(col) + 1) * 13);
             let integer = -((-displacement + 31) / 32);
             let fraction = displacement - integer * 32;
-            let first = ORIGIN + row as i32 + integer + 1;
-            let value = (32 - fraction) * i32::from(main[first as usize])
-                + fraction * i32::from(main[first as usize + 1])
+            let first = block_index(ORIGIN + block_coordinate(row) + integer + 1);
+            let value = (32 - fraction) * i32::from(main[first])
+                + fraction * i32::from(main[first + 1])
                 + 16;
-            output[row * width + col] = (value >> 5) as i16;
+            output[row * width + col] = signed_sample(value >> 5);
         }
     }
     Ok(())
@@ -473,15 +518,15 @@ pub fn predict_signed_width4_angular(
     if mode == 7 {
         let l = left.expect("validated above");
         const ORIGIN: i32 = 16;
-        main[ORIGIN as usize] = l[0];
+        main[block_index(ORIGIN)] = l[0];
         for i in 0..17 {
-            main[ORIGIN as usize + i + 1] = l[i + 1];
+            main[block_index(ORIGIN) + i + 1] = l[i + 1];
         }
         for index in (-16_i32..=-1).rev() {
-            let side_index = (((-index * 630 + 128) >> 8) as usize)
+            let side_index = block_index((-index * 630 + 128) >> 8)
                 .saturating_sub(1)
                 .min(16);
-            main[(ORIGIN + index) as usize] = top[side_index + 1];
+            main[block_index(ORIGIN + index)] = top[side_index + 1];
         }
     }
     for row in 0..4 {
@@ -490,8 +535,8 @@ pub fn predict_signed_width4_angular(
                 let displacement = (row + 1) * 13;
                 let reference = col + (displacement >> 5);
                 let fraction = displacement & 31;
-                ((32 - fraction) as i32 * i32::from(top[reference + 1])
-                    + fraction as i32 * i32::from(top[reference + 2])
+                (block_coordinate(32 - fraction) * i32::from(top[reference + 1])
+                    + block_coordinate(fraction) * i32::from(top[reference + 2])
                     + 16)
                     >> 5
             } else if mode == 6 {
@@ -507,16 +552,16 @@ pub fn predict_signed_width4_angular(
                 }
             } else {
                 const ORIGIN: i32 = 16;
-                let displacement = -((col as i32 + 1) * 13);
+                let displacement = -((block_coordinate(col) + 1) * 13);
                 let integer = -((-displacement + 31) / 32);
                 let fraction = displacement - integer * 32;
-                let first = ORIGIN + row as i32 + integer + 1;
-                ((32 - fraction) * i32::from(main[first as usize])
-                    + fraction * i32::from(main[first as usize + 1])
+                let first = block_index(ORIGIN + block_coordinate(row) + integer + 1);
+                ((32 - fraction) * i32::from(main[first])
+                    + fraction * i32::from(main[first + 1])
                     + 16)
                     >> 5
             };
-            output[row * 4 + col] = value as i16;
+            output[row * 4 + col] = signed_sample(value);
         }
     }
     Ok(())
@@ -557,14 +602,15 @@ pub fn filter_signed_references(
     }
     let end = 2 * width;
     let corner = (i32::from(left[1]) + 2 * i32::from(left[0]) + i32::from(top[1]) + 2) >> 2;
-    out_left[0] = corner as i16;
-    out_top[0] = corner as i16;
+    out_left[0] = signed_sample(corner);
+    out_top[0] = signed_sample(corner);
     for i in 1..end {
-        out_left[i] =
-            ((i32::from(left[i - 1]) + 2 * i32::from(left[i]) + i32::from(left[i + 1]) + 2) >> 2)
-                as i16;
-        out_top[i] = ((i32::from(top[i - 1]) + 2 * i32::from(top[i]) + i32::from(top[i + 1]) + 2)
-            >> 2) as i16;
+        out_left[i] = signed_sample(
+            (i32::from(left[i - 1]) + 2 * i32::from(left[i]) + i32::from(left[i + 1]) + 2) >> 2,
+        );
+        out_top[i] = signed_sample(
+            (i32::from(top[i - 1]) + 2 * i32::from(top[i]) + i32::from(top[i + 1]) + 2) >> 2,
+        );
     }
     out_left[end] = left[end];
     out_top[end] = top[end];
@@ -583,18 +629,18 @@ pub fn predict_signed_dc(
     if output.len() < width * width {
         return Err(PredictionError::BufferTooSmall);
     }
-    let mut total = width as i32;
+    let mut total = block_coordinate(width);
     for i in 1..=width {
         total += i32::from(left[i]) + i32::from(top[i]);
     }
-    let dc = total / (2 * width) as i32;
-    output[..width * width].fill(dc as i16);
+    let dc = total / block_coordinate(2 * width);
+    output[..width * width].fill(signed_sample(dc));
     output[0] = if width == 4 {
-        ((3 * (i32::from(left[1]) + i32::from(top[1])) + 2 * dc + 4) >> 3) as i16
+        signed_sample((3 * (i32::from(left[1]) + i32::from(top[1])) + 2 * dc + 4) >> 3)
     } else if width == 8 {
-        ((i32::from(left[1]) + i32::from(top[1]) + 2 * dc + 2) >> 2) as i16
+        signed_sample((i32::from(left[1]) + i32::from(top[1]) + 2 * dc + 2) >> 2)
     } else {
-        ((i32::from(left[1]) + i32::from(top[1]) + 6 * dc + 4) >> 3) as i16
+        signed_sample((i32::from(left[1]) + i32::from(top[1]) + 6 * dc + 4) >> 3)
     };
     let (ew, er, shift, sw) = if width == 4 {
         (5, 4, 3, 3)
@@ -604,8 +650,8 @@ pub fn predict_signed_dc(
         (7, 4, 3, 1)
     };
     for i in 1..width {
-        output[i] = ((sw * i32::from(top[i + 1]) + ew * dc + er) >> shift) as i16;
-        output[i * width] = ((sw * i32::from(left[i + 1]) + ew * dc + er) >> shift) as i16;
+        output[i] = signed_sample((sw * i32::from(top[i + 1]) + ew * dc + er) >> shift);
+        output[i * width] = signed_sample((sw * i32::from(left[i + 1]) + ew * dc + er) >> shift);
     }
     Ok(())
 }
@@ -677,10 +723,10 @@ pub fn predict_signed_angular_reference_b(
         let fraction = displacement & 31;
         for col in 0..width {
             let i = col + integer + 1;
-            let value = (32 - fraction) as i32 * i32::from(top[i])
-                + fraction as i32 * i32::from(top[i + 1])
+            let value = block_coordinate(32 - fraction) * i32::from(top[i])
+                + block_coordinate(fraction) * i32::from(top[i + 1])
                 + 16;
-            output[row * width + col] = (value >> 5) as i16;
+            output[row * width + col] = signed_sample(value >> 5);
         }
     }
     Ok(())
@@ -702,10 +748,10 @@ pub fn predict_signed_side_directional(
             let displacement = (col + 1) * 13;
             let index = row + (displacement >> 5) + 1;
             let fraction = displacement & 31;
-            let value = (32 - fraction) as i32 * i32::from(filtered_left[index])
-                + fraction as i32 * i32::from(filtered_left[index + 1])
+            let value = block_coordinate(32 - fraction) * i32::from(filtered_left[index])
+                + block_coordinate(fraction) * i32::from(filtered_left[index + 1])
                 + 16;
-            output[row * width + col] = (value >> 5) as i16;
+            output[row * width + col] = signed_sample(value >> 5);
         }
     }
     Ok(())
@@ -751,22 +797,20 @@ pub fn predict_signed_angular(
             // Large inverse angles can project past the persistent 33-sample
             // side history even when the predictor never consumes that far.
             // Extend by repeating the final available sample.
-            let side_index = ((sum >> 8) as usize).min(side.len() - 1);
-            refs[(origin - i as i32) as usize] = side[side_index];
+            let side_index = block_index(sum >> 8).min(side.len() - 1);
+            refs[block_index(origin - block_coordinate(i))] = side[side_index];
         }
     }
     for r in 0..width {
         for c in 0..width {
             let axis = if horizontal { c } else { r };
             let cross = if horizontal { r } else { c };
-            let d = (axis as i32 + 1) * angle;
+            let d = (block_coordinate(axis) + 1) * angle;
             let integer = d >> 5;
             let frac = d - integer * 32;
-            let i = origin + cross as i32 + integer + 1;
-            let val = (32 - frac) * i32::from(refs[i as usize])
-                + frac * i32::from(refs[i as usize + 1])
-                + 16;
-            output[r * width + c] = (val >> 5) as i16;
+            let i = block_index(origin + block_coordinate(cross) + integer + 1);
+            let val = (32 - frac) * i32::from(refs[i]) + frac * i32::from(refs[i + 1]) + 16;
+            output[r * width + c] = signed_sample(val >> 5);
         }
     }
     Ok(())
@@ -786,11 +830,12 @@ pub fn predict_signed_planar(
     let e = width - 1;
     for r in 0..width {
         for c in 0..width {
-            let h =
-                (e - c) as i32 * i32::from(refs.left[r]) + (c + 1) as i32 * i32::from(refs.top[e]);
-            let v =
-                (e - r) as i32 * i32::from(refs.top[c]) + (r + 1) as i32 * i32::from(refs.left[e]);
-            output[r * width + c] = ((h + v + width as i32) / (2 * width) as i32) as i16;
+            let h = block_coordinate(e - c) * i32::from(refs.left[r])
+                + block_coordinate(c + 1) * i32::from(refs.top[e]);
+            let v = block_coordinate(e - r) * i32::from(refs.top[c])
+                + block_coordinate(r + 1) * i32::from(refs.left[e]);
+            output[r * width + c] =
+                signed_sample((h + v + block_coordinate(width)) / block_coordinate(2 * width));
         }
     }
     Ok(())
@@ -836,7 +881,7 @@ mod tests {
 
     #[test]
     fn width4_angular_callbacks_have_fixed_vectors() {
-        let top = core::array::from_fn(|i| (i * 10) as i16);
+        let top = core::array::from_fn(|i| i16::try_from(i * 10).expect("test index fits i16"));
         let left = [100_i16; 33];
         let mut out = [0_i16; 16];
         predict_signed_width4_angular(&top, 5, None, &mut out).unwrap();
@@ -859,7 +904,7 @@ mod tests {
         predict_signed_wide_angular_reference_a(&left, &top, 8, &mut out).unwrap();
         assert_eq!(out[0], 0);
         assert_eq!(out[7 * 8], 100);
-        let ramp = core::array::from_fn(|i| (i as i16) * 10);
+        let ramp = core::array::from_fn(|i| i16::try_from(i).expect("test index fits i16") * 10);
         predict_signed_top_edge_directional_signed(&ramp, 8, &mut out).unwrap();
         assert_eq!(out[0], 20);
         assert_eq!(out[7 * 8 + 7], 160);
@@ -888,8 +933,8 @@ mod tests {
 
     #[test]
     fn signed_constructor_drops_corner_history_entry() {
-        let left = core::array::from_fn(|i| i as i16);
-        let top = core::array::from_fn(|i| (100 + i) as i16);
+        let left = core::array::from_fn(|i| i16::try_from(i).expect("test index fits i16"));
+        let top = core::array::from_fn(|i| i16::try_from(100 + i).expect("test index fits i16"));
         let refs = build_signed_references(&left, &top);
         assert_eq!(refs.left[0], 1);
         assert_eq!(refs.top[0], 101);

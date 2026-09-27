@@ -64,9 +64,12 @@ pub(super) fn update(
             let delta = c - b;
             let middle = b + (delta >> 1);
             let residual = a - middle;
-            state.histories[history][i] = (middle + (residual >> 1)) as i16;
-            state.histories[history + 1][i] = (residual + 0x100) as i16;
-            state.histories[history + 2][i] = (delta + 0x100) as i16;
+            state.histories[history][i] =
+                i16::try_from(middle + (residual >> 1)).expect("byte color history fits i16");
+            state.histories[history + 1][i] =
+                i16::try_from(residual + 0x100).expect("byte color history fits i16");
+            state.histories[history + 2][i] =
+                i16::try_from(delta + 0x100).expect("byte color history fits i16");
         }
     }
     Ok(())
@@ -114,7 +117,9 @@ fn refresh(
 fn transition(code: u16, top: &mut [u8; 33], left: &mut [u8; 33]) {
     let t = *top;
     let l = *left;
-    let avg = |a: u8, b: u8| ((u16::from(a) + u16::from(b) + 1) >> 1) as u8;
+    let avg = |a: u8, b: u8| {
+        u8::try_from((u16::from(a) + u16::from(b) + 1) >> 1).expect("average of two bytes fits u8")
+    };
     match code {
         0 => {
             top.fill(128);

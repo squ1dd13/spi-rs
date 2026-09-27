@@ -418,9 +418,17 @@ mod tests {
         picture.push(selector);
         picture.extend_from_slice(&[0; 4]);
         let mut input = Vec::new();
-        input.extend_from_slice(&(picture.len() as u32).to_le_bytes());
+        input.extend_from_slice(
+            &u32::try_from(picture.len())
+                .expect("test picture fits u32")
+                .to_le_bytes(),
+        );
         input.extend_from_slice(&picture);
-        input.extend_from_slice(&(record.len() as u32).to_le_bytes());
+        input.extend_from_slice(
+            &u32::try_from(record.len())
+                .expect("test record fits u32")
+                .to_le_bytes(),
+        );
         input.extend_from_slice(record);
         input
     }
@@ -436,7 +444,11 @@ mod tests {
         }
         let len = 14 + body.len();
         let mut record = vec![0xaa, 2];
-        record.extend_from_slice(&(len as u32).to_be_bytes());
+        record.extend_from_slice(
+            &u32::try_from(len)
+                .expect("test record fits u32")
+                .to_be_bytes(),
+        );
         record.push(0); // first opaque header byte
         record.extend_from_slice(&index.to_be_bytes());
         record.extend_from_slice(&[0; 5]); // remaining 40 header bits
@@ -513,7 +525,9 @@ mod tests {
     fn unsupported_alpha_method_has_stable_kind() {
         let mut record = raw_record(0, [1, 2, 3], None);
         record.extend_from_slice(&[0; 4]); // alpha method 2 plus reader window
-        let new_len = (record.len() as u32).to_be_bytes();
+        let new_len = u32::try_from(record.len())
+            .expect("test record fits u32")
+            .to_be_bytes();
         record[2..6].copy_from_slice(&new_len);
         let error = crate::decode(&framed(16, 16, 4, &record)).unwrap_err();
         assert_eq!(error.kind(), crate::ErrorKind::UnsupportedSyntax);

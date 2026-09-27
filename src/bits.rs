@@ -50,6 +50,22 @@ impl<'a> BitReader<'a> {
         Ok(value)
     }
 
+    pub(crate) fn read_u8(&mut self, count: u32) -> Result<u8, BitError> {
+        if count == 0 || count > 8 {
+            return Err(BitError::InvalidCount);
+        }
+        self.read_bits(count)
+            .map(|value| u8::try_from(value).expect("at most eight bits fit in u8"))
+    }
+
+    pub(crate) fn read_u16(&mut self, count: u32) -> Result<u16, BitError> {
+        if count == 0 || count > 16 {
+            return Err(BitError::InvalidCount);
+        }
+        self.read_bits(count)
+            .map(|value| u16::try_from(value).expect("at most sixteen bits fit in u16"))
+    }
+
     pub(crate) fn read_bit(&mut self) -> Result<u8, BitError> {
         #[allow(clippy::cast_possible_truncation)]
         self.read_bits(1).map(|v| v as u8)
@@ -92,7 +108,7 @@ impl<'a> ContextBitReader<'a> {
             return false;
         }
         let source_offset = bit / 8;
-        let shift = (bit & 7) as u32;
+        let shift = u32::try_from(bit & 7).expect("bit offset fits in u32");
         let mut word = 0_u32;
         for byte in &self.data[source_offset..source_offset + 4] {
             word = (word << 8) | u32::from(*byte);
@@ -112,14 +128,17 @@ impl<'a> ContextBitReader<'a> {
         if count == 0 || count > 4 || self.byte_offset >= self.size {
             return false;
         }
-        let take = count.min((self.size - self.byte_offset) as u32);
+        let take = usize::try_from(count)
+            .expect("refill count is at most four")
+            .min(self.size - self.byte_offset);
+        let take_bits = u32::try_from(take).expect("refill count is at most four");
         let mut word = 0_u32;
-        for byte in &self.data[self.byte_offset..self.byte_offset + take as usize] {
+        for byte in &self.data[self.byte_offset..self.byte_offset + take] {
             word = (word << 8) | u32::from(*byte);
         }
-        self.accumulator = word << (8 * (4 - take));
-        self.available = take * 8;
-        self.byte_offset += take as usize;
+        self.accumulator = word << (8 * (4 - take_bits));
+        self.available = take_bits * 8;
+        self.byte_offset += take;
         true
     }
 
@@ -170,6 +189,14 @@ impl<'a> ContextBitReader<'a> {
             remaining -= take;
         }
         Some(result)
+    }
+
+    pub(crate) fn read_value_u8(&mut self, count: u32) -> Option<u8> {
+        if count > 8 {
+            return None;
+        }
+        self.read_value(count)
+            .map(|value| u8::try_from(value).expect("at most eight bits fit in u8"))
     }
 
     pub(crate) fn peek_next_byte(&self) -> Option<u8> {

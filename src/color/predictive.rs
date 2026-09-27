@@ -18,8 +18,14 @@ use crate::{
         predict_signed_wide_angular_reference_a, predict_signed_width4_angular,
         predict_signed_width4_diagonal, prediction_direction_for_mode,
     },
-    transform::{inverse_transform_16x16, reconstruct_component_residual},
+    transform::{
+        inverse_transform_16x16, reconstruct_component_residual, truncate_signed_halfword,
+    },
 };
+
+fn low_byte(value: i16) -> u8 {
+    value.to_le_bytes()[0]
+}
 
 pub(super) fn decode_block(
     bits: &mut BitReader<'_>,
@@ -152,7 +158,8 @@ pub(super) fn decode_block(
     }
     let final_bit = reader.logical_bit();
     while bits.bit_position() < final_bit {
-        let take = (final_bit - bits.bit_position()).min(32) as u32;
+        let take = u32::try_from((final_bit - bits.bit_position()).min(32))
+            .expect("read length is at most 32 bits");
         bits.read_bits(take)
             .map_err(|_| invalid("predictive reader passed stream end"))?;
     }
@@ -160,28 +167,31 @@ pub(super) fn decode_block(
     let mut converted = [[0_u8; 256]; 3];
     for i in 0..256 {
         let co = i32::from(signed[1][i]) - 256;
-        let luma = i32::from(signed[0][i]) as u32 & 0xffff;
-        let w2 = luma.wrapping_sub((co as u32) >> 1);
-        let red_raw = (w2.wrapping_add(co as u32) as u16) as i16;
-        let red = if (red_raw as u16 & 0xff00) != 0 {
-            ((-red_raw) >> 15) as u8
+        let luma = u32::from(signed[0][i].cast_unsigned());
+        let w2 = luma.wrapping_sub(co.cast_unsigned() >> 1);
+        let red_raw = truncate_signed_halfword(w2.wrapping_add(co.cast_unsigned()));
+        let red = if (red_raw.cast_unsigned() & 0xff00) != 0 {
+            low_byte((-red_raw) >> 15)
         } else {
-            red_raw as u8
+            u8::try_from(red_raw).expect("red sample is below 256")
         };
-        let cg = (i32::from(signed[2][i]) + 0x1ff00) as u32;
-        let green_raw = (w2.wrapping_sub(cg >> 1) as u16) as i16;
-        let green = if (green_raw as u16 & 0xff00) != 0 {
-            (((-green_raw) >> 15) & 0xff) as u8
+        let cg = u32::try_from(i32::from(signed[2][i]) + 0x1ff00)
+            .expect("chroma bias makes the value nonnegative");
+        let green_raw = truncate_signed_halfword(w2.wrapping_sub(cg >> 1));
+        let green = if (green_raw.cast_unsigned() & 0xff00) != 0 {
+            u8::try_from(((-green_raw) >> 15) & 0xff).expect("masked green sample fits u8")
         } else {
-            green_raw as u8
+            u8::try_from(green_raw).expect("green sample is below 256")
         };
-        let blue_raw = (u32::from(signed[2][i] as u16)
-            .wrapping_add(u32::from(green))
-            .wrapping_add(0xff00) as u16) as i16;
-        let blue = if (blue_raw as u16) < 0x100 {
-            blue_raw as u8
+        let blue_raw = truncate_signed_halfword(
+            u32::from(signed[2][i].cast_unsigned())
+                .wrapping_add(u32::from(green))
+                .wrapping_add(0xff00),
+        );
+        let blue = if blue_raw.cast_unsigned() < 0x100 {
+            u8::try_from(blue_raw).expect("blue sample is below 256")
         } else {
-            ((-blue_raw) >> 15) as u8
+            low_byte((-blue_raw) >> 15)
         };
         converted[0][i] = red;
         converted[1][i] = green;
@@ -226,7 +236,10 @@ fn ensure_histories(
                 .enumerate()
             {
                 history
-                    .begin_block_row(y as u16, plane != 0)
+                    .begin_block_row(
+                        u16::try_from(y).expect("block row fits history"),
+                        plane != 0,
+                    )
                     .map_err(coefficient_error)?;
             }
         }
@@ -249,7 +262,7 @@ fn decode_component(
         reader,
         history,
         ComponentRequest {
-            argument: argument as u32,
+            argument: u32::try_from(argument).expect("component argument is at most four"),
             horizontal_offset: u16::try_from(block_x * 16)
                 .map_err(|_| invalid("predictive block offset overflow"))?,
             maximum_width,
@@ -363,8 +376,11 @@ fn reconstruct_component(
                 let i = row * width + col;
                 let dst = (slot_y + row) * 16 + slot_x + col;
                 let cap = if plane == 0 { 255 } else { 511 };
-                output[dst] = (i32::from(pred[i]) + i32::from(residual[slot * width * width + i]))
-                    .clamp(0, cap) as i16;
+                output[dst] = i16::try_from(
+                    (i32::from(pred[i]) + i32::from(residual[slot * width * width + i]))
+                        .clamp(0, cap),
+                )
+                .expect("clamped color sample fits i16");
             }
         }
     }

@@ -14,11 +14,18 @@ pub enum TransformError {
 
 /// Wrap an integer to a signed 16-bit value, matching a narrowing halfword cast.
 pub fn truncate_signed_halfword(value: u32) -> i16 {
-    value as u16 as i16
+    let bytes = value.to_le_bytes();
+    i16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+fn truncate_i32(value: i32) -> i16 {
+    let bytes = value.to_le_bytes();
+    i16::from_le_bytes([bytes[0], bytes[1]])
 }
 
 fn round_shift(value: i64, shift: u32) -> i32 {
-    ((value + (1_i64 << (shift - 1))) >> shift) as i32
+    let bytes = ((value + (1_i64 << (shift - 1))) >> shift).to_le_bytes();
+    i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
 /// Apply the separable 16 by 16 inverse transform.
@@ -98,7 +105,7 @@ pub fn inverse_transform_16x16(
             for k in 0..16 {
                 sum += i64::from(intermediate[row * 16 + k]) * i64::from(T[k][col]);
             }
-            output[row * 16 + col] = round_shift(sum, 12) as i16;
+            output[row * 16 + col] = truncate_i32(round_shift(sum, 12));
         }
     }
     Ok(())
@@ -128,7 +135,7 @@ const A8: [i16; 64] = [
 
 fn transform4(values: &mut [i16], callback: u8) {
     if callback == 1 {
-        values[0] = ((i32::from(values[0]) + 32) >> 6) as i16;
+        values[0] = truncate_i32((i32::from(values[0]) + 32) >> 6);
         return;
     }
     let mut temp = [0_i16; 16];
@@ -140,10 +147,10 @@ fn transform4(values: &mut [i16], callback: u8) {
             i32::from(values[12 + col]),
         );
         let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
-        temp[col] = (a0 + a2) as i16;
-        temp[4 + col] = (a1 + a3) as i16;
-        temp[8 + col] = (a1 - a3) as i16;
-        temp[12 + col] = (a0 - a2) as i16;
+        temp[col] = truncate_i32(a0 + a2);
+        temp[4 + col] = truncate_i32(a1 + a3);
+        temp[8 + col] = truncate_i32(a1 - a3);
+        temp[12 + col] = truncate_i32(a0 - a2);
     }
     for row in 0..4 {
         let s = &temp[row * 4..row * 4 + 4];
@@ -155,14 +162,14 @@ fn transform4(values: &mut [i16], callback: u8) {
         );
         let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
         for (j, v) in [a0 + a2, a1 + a3, a1 - a3, a0 - a2].into_iter().enumerate() {
-            values[row * 4 + j] = ((v + 32) >> 6) as i16;
+            values[row * 4 + j] = truncate_i32((v + 32) >> 6);
         }
     }
 }
 
 fn transform8(values: &mut [i16], callback: u8) {
     if callback == 1 {
-        values[0] = ((i32::from(values[0]) + 32) >> 6) as i16;
+        values[0] = truncate_i32((i32::from(values[0]) + 32) >> 6);
         return;
     }
     fn one(src: &[i16], stride: usize, dst: &mut [i16], ds: usize, round: bool) {
@@ -197,7 +204,7 @@ fn transform8(values: &mut [i16], callback: u8) {
             ev[0] - o0,
         ];
         for i in 0..8 {
-            dst[i * ds] = (if round { out[i] >> 6 } else { out[i] }) as i16;
+            dst[i * ds] = truncate_i32(if round { out[i] >> 6 } else { out[i] });
         }
     }
     let mut tmp = [0_i16; 64];
@@ -252,7 +259,7 @@ pub fn reconstruct_component_residual(
             let mut q = [0_i16; 16];
             for i in 0..16 {
                 q[i] = truncate_signed_halfword(
-                    (i32::from(coefficients[slot][i]) * i32::from(weights[i])) as u32,
+                    (i32::from(coefficients[slot][i]) * i32::from(weights[i])).cast_unsigned(),
                 );
             }
             let mut t = [0_i16; 16];
@@ -264,10 +271,10 @@ pub fn reconstruct_component_residual(
                     i32::from(q[12 + c]),
                 );
                 let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
-                t[c] = truncate_signed_halfword((a0 + a2) as u32);
-                t[4 + c] = truncate_signed_halfword((a1 + a3) as u32);
-                t[8 + c] = truncate_signed_halfword((a1 - a3) as u32);
-                t[12 + c] = truncate_signed_halfword((a0 - a2) as u32);
+                t[c] = truncate_i32(a0 + a2);
+                t[4 + c] = truncate_i32(a1 + a3);
+                t[8 + c] = truncate_i32(a1 - a3);
+                t[12 + c] = truncate_i32(a0 - a2);
             }
             for r in 0..4 {
                 let s = &t[r * 4..r * 4 + 4];
@@ -280,7 +287,10 @@ pub fn reconstruct_component_residual(
                 let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
                 for c in 0..4 {
                     output[slot * slot_len + c * 4 + r] = truncate_signed_halfword(
-                        (([a0 + a2, a1 + a3, a1 - a3, a0 - a2][c] as u32).wrapping_add(32)) >> 6,
+                        ([a0 + a2, a1 + a3, a1 - a3, a0 - a2][c]
+                            .cast_unsigned()
+                            .wrapping_add(32))
+                            >> 6,
                     );
                 }
             }
@@ -297,7 +307,7 @@ pub fn reconstruct_component_residual(
         };
         if width == 4 && alternate_profile {
             for i in 0..slot_len {
-                v[i] = (i32::from(weights[i]) * i32::from(v[i])) as i16;
+                v[i] = truncate_i32(i32::from(weights[i]) * i32::from(v[i]));
             }
         } else {
             let shift = if width == 4 {
@@ -309,7 +319,7 @@ pub fn reconstruct_component_residual(
             };
             let round = 1_i32 << (shift - 1);
             for i in 0..slot_len {
-                v[i] = ((round + i32::from(weights[i]) * i32::from(v[i])) >> shift) as i16;
+                v[i] = truncate_i32((round + i32::from(weights[i]) * i32::from(v[i])) >> shift);
             }
         }
         if width == 4 {

@@ -2,6 +2,10 @@ use thiserror::Error;
 
 use crate::bits::ContextBitReader;
 
+fn low_byte(value: u32) -> u8 {
+    value.to_le_bytes()[0]
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum EntropyError {
     #[error("entropy code is truncated or invalid")]
@@ -47,9 +51,9 @@ pub(crate) fn read_signed_rice(
     let magnitude = (1_u32 << prefix) + suffix - 1;
     let sign = bits.read_bit().map_err(|_| EntropyError::InvalidCode)?;
     Ok(if sign != 0 {
-        -(magnitude as i32)
+        -i32::try_from(magnitude).expect("Rice prefix limits the magnitude")
     } else {
-        magnitude as i32
+        i32::try_from(magnitude).expect("Rice prefix limits the magnitude")
     })
 }
 
@@ -75,7 +79,7 @@ pub(crate) fn decode_rle_plane(
                     .map_err(|_| EntropyError::InvalidCode)?
             };
             // The stream stores this run count in an 8-bit register.
-            let run = (((1_u32 << prefix) - 1) + suffix) as u8 as usize;
+            let run = usize::from(low_byte(((1_u32 << prefix) - 1) + suffix));
             let end = produced
                 .checked_add(run)
                 .ok_or(EntropyError::OutputOverflow)?;
@@ -90,14 +94,12 @@ pub(crate) fn decode_rle_plane(
         let prefix = read_unary_prefix(bits, 31)?;
         let remainder = bits.read_bits(2).map_err(|_| EntropyError::InvalidCode)?;
         let literal = if prefix < 21 {
-            prefix * 4 + remainder
+            u8::try_from(prefix * 4 + remainder).expect("literal prefix is below 21")
         } else if prefix == 21 && remainder <= 2 {
-            remainder | 0x54
+            u8::try_from(remainder | 0x54).expect("literal is at most 0x56")
         } else {
-            bits.read_byte()
-                .map(|v| v as u32)
-                .map_err(|_| EntropyError::InvalidCode)?
-        } as u8;
+            bits.read_byte().map_err(|_| EntropyError::InvalidCode)?
+        };
         if produced < output_size {
             output[produced] = literal;
         }
@@ -142,28 +144,31 @@ pub(crate) fn read_context_prefix(reader: &mut ContextBitReader<'_>) -> Result<u
     }
 
     let mut candidate = reader.accumulator >> (32 - lookahead);
-    let next_byte_shift = lookahead as i32 - available_for_lookahead as i32;
+    let next_byte_shift = i32::try_from(lookahead).expect("lookahead is at most 31")
+        - i32::try_from(available_for_lookahead).expect("available bits are at most 32");
     if (1..=8).contains(&next_byte_shift)
         && let Some(next_byte) = reader.peek_next_byte()
     {
-        candidate |= u32::from(next_byte) >> (8 - next_byte_shift as u32);
+        candidate |= u32::from(next_byte)
+            >> (8 - u32::try_from(next_byte_shift).expect("shift is positive"));
     }
-    let mut zeroes = leading_zeroes((candidate >> 24) as u8);
+    let candidate_bytes = candidate.to_be_bytes();
+    let mut zeroes = leading_zeroes(candidate_bytes[0]);
     if zeroes == 8 {
-        zeroes = leading_zeroes((candidate >> 16) as u8) + 8;
+        zeroes = leading_zeroes(candidate_bytes[1]) + 8;
         if zeroes == 16 {
-            zeroes = leading_zeroes((candidate >> 8) as u8) + 16;
+            zeroes = leading_zeroes(candidate_bytes[2]) + 16;
             if zeroes == 24 {
-                zeroes = leading_zeroes(candidate as u8) + 24;
+                zeroes = leading_zeroes(candidate_bytes[3]) + 24;
             }
         }
     }
-    let aligned = (old_available | 0xffff_fff8) as i32;
-    let signed_width = aligned + zeroes as i32;
+    let aligned = (old_available | 0xffff_fff8).cast_signed();
+    let signed_width = aligned + i32::try_from(zeroes).expect("prefix has at most 32 zeroes");
     if !(0..=31).contains(&signed_width) {
         return Err(EntropyError::InvalidCode);
     }
-    let width = signed_width as u32;
+    let width = u32::try_from(signed_width).expect("checked nonnegative width");
     let mut bits_for_code = width + 1;
     if available_for_lookahead <= width {
         if !reader.refill(4) {
@@ -221,7 +226,7 @@ pub(crate) fn decode_contextual_indices(
         let old_accumulator = reader.accumulator;
         let old_available = reader.available;
         let mut bits_for_literal = prefix_bits.wrapping_sub(old_available);
-        let literal = if (bits_for_literal as i32) <= 0 {
+        let literal = if bits_for_literal.cast_signed() <= 0 {
             bits_for_literal = prefix_bits;
             reader.accumulator = lz(old_accumulator, bits_for_literal);
             reader.available = old_available - bits_for_literal;
@@ -238,7 +243,7 @@ pub(crate) fn decode_contextual_indices(
             (new_accumulator >> suffix_shift) | prefix_fragment
         };
         let literal_cursor = cursor;
-        indices[literal_cursor as usize] = literal as u8;
+        indices[literal_cursor as usize] = low_byte(literal);
 
         let lookahead_bits = 0x18 | (reader.available & 7);
         let pre_lookahead_available = reader.available;
@@ -258,26 +263,36 @@ pub(crate) fn decode_contextual_indices(
             }
         }
         let mut candidate = reader.accumulator >> (32 - lookahead_bits);
-        let next_shift = lookahead_bits as i32 - available_after_lookahead as i32;
+        let next_shift = i32::try_from(lookahead_bits).expect("lookahead is at most 31")
+            - i32::try_from(available_after_lookahead).expect("available bits are at most 32");
         if next_shift >= 1
             && let Some(next) = reader.peek_next_byte()
         {
-            candidate |= u32::from(next) >> (8 - next_shift as u32);
+            candidate |=
+                u32::from(next) >> (8 - u32::try_from(next_shift).expect("shift is positive"));
         }
-        let mut code_width = leading_zeroes((candidate >> 24) as u8);
+        let candidate_bytes = candidate.to_be_bytes();
+        let mut code_width = leading_zeroes(candidate_bytes[0]);
         if code_width == 8 {
-            code_width = leading_zeroes((candidate >> 16) as u8) + 8;
+            code_width = leading_zeroes(candidate_bytes[1]) + 8;
             if code_width == 16 {
-                code_width = leading_zeroes((candidate >> 8) as u8) + 16;
+                code_width = leading_zeroes(candidate_bytes[2]) + 16;
                 if code_width == 24 {
-                    code_width = leading_zeroes(candidate as u8) + 24;
+                    code_width = leading_zeroes(candidate_bytes[3]) + 24;
                 }
             }
         }
         let aligned_available = pre_lookahead_available | 0xffff_fff8;
         let code_width = aligned_available.wrapping_add(code_width);
+        if code_width >= 32 {
+            return Err(EntropyError::InvalidCode);
+        }
         let mut bits_for_code = code_width.wrapping_add(1);
-        if ((available_after_lookahead.wrapping_sub(code_width)) as i32) <= 0 {
+        if available_after_lookahead
+            .wrapping_sub(code_width)
+            .cast_signed()
+            <= 0
+        {
             if !reader.refill(4) {
                 return Err(EntropyError::InvalidCode);
             }
@@ -294,14 +309,15 @@ pub(crate) fn decode_contextual_indices(
         if code_width != 0 {
             let current_accumulator = reader.accumulator;
             let current_available = reader.available;
-            let refill = code_width as i32 - current_available as i32;
+            let refill = i32::try_from(code_width).expect("code width is at most 32")
+                - i32::try_from(current_available).expect("available bits are at most 32");
             if refill > 0 {
                 if !reader.refill(4) {
                     return Err(EntropyError::InvalidCode);
                 }
                 let prefix_value = current_accumulator >> (32 - code_width);
                 let new_accumulator = reader.accumulator;
-                let extra = refill as u32;
+                let extra = u32::try_from(refill).expect("refill is positive");
                 let new_available = reader.available;
                 reader.accumulator = lz(new_accumulator, extra);
                 reader.available = new_available - extra;
@@ -314,9 +330,6 @@ pub(crate) fn decode_contextual_indices(
                 code_value = old_accumulator >> (32 - code_bits);
             }
         }
-        if code_width >= 32 {
-            return Err(EntropyError::InvalidCode);
-        }
         let mask = if code_width == 0 {
             0
         } else {
@@ -328,11 +341,11 @@ pub(crate) fn decode_contextual_indices(
         }
         if run_control >= 1 {
             let advance = (1_u32 << code_width).wrapping_add(code_value);
-            if literal_cursor + advance > indices.len() as u32 {
+            if usize::try_from(literal_cursor + advance).map_or(true, |end| end > indices.len()) {
                 return Err(EntropyError::OutputOverflow);
             }
             indices[literal_cursor as usize..(literal_cursor + advance) as usize]
-                .fill(literal as u8);
+                .fill(low_byte(literal));
             cursor += advance;
         } else {
             cursor += 1;
@@ -517,10 +530,11 @@ pub(crate) fn coefficient_scan_position(
         return Ok(SCAN8[variant as usize][scan_index as usize]);
     }
     if variant == 1 {
-        return Ok(scan_index as u16);
+        return Ok(u16::try_from(scan_index).expect("validated scan index is below 256"));
     }
     if variant == 2 {
-        return Ok(((scan_index % 16) * 16 + scan_index / 16) as u16);
+        return Ok(u16::try_from((scan_index % 16) * 16 + scan_index / 16)
+            .expect("validated scan position is below 256"));
     }
     let mut cursor = 0_u32;
     for diagonal in 0..31_u32 {
@@ -529,14 +543,16 @@ pub(crate) fn coefficient_scan_position(
         if diagonal & 1 != 0 {
             for row in (first..=last).rev() {
                 if cursor == scan_index {
-                    return Ok((row * 16 + diagonal - row) as u16);
+                    return Ok(u16::try_from(row * 16 + diagonal - row)
+                        .expect("scan position is below 256"));
                 }
                 cursor += 1;
             }
         } else {
             for row in first..=last {
                 if cursor == scan_index {
-                    return Ok((row * 16 + diagonal - row) as u16);
+                    return Ok(u16::try_from(row * 16 + diagonal - row)
+                        .expect("scan position is below 256"));
                 }
                 cursor += 1;
             }
@@ -597,11 +613,14 @@ pub(crate) fn decode_scanned_coefficient(
     }
     *scan_cursor = scan_index + 1;
     let signed = if payload & 1 != 0 {
-        -(magnitude as i32)
+        -i32::try_from(magnitude).expect("checked magnitude fits i32")
     } else {
-        magnitude as i32
+        i32::try_from(magnitude).expect("checked magnitude fits i32")
     };
-    Ok((position, signed as i16))
+    Ok((
+        position,
+        i16::try_from(signed).expect("checked magnitude fits i16"),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -812,7 +831,7 @@ fn read_context_history_symbol(
             is_neutral = decoded_width == 16 && previous_neutral && delayed_neutral;
         }
     }
-    let output = output as u8;
+    let output = low_byte(output);
     history.store(offset, output, maximum_width, decoded_width, is_neutral)?;
     Ok(output)
 }

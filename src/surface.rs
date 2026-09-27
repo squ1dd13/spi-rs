@@ -95,14 +95,20 @@ pub fn copy_color_motion(
     {
         return Err(SurfaceError::OutOfBounds);
     }
-    let sx = destination_x as i64 - i64::from(motion.x);
-    let sy = destination_y as i64 - i64::from(motion.y);
-    if sx < 0 || sy < 0 || sx + 16 > width as i64 || sy + 16 > height as i64 {
+    let sx = i128::try_from(destination_x).expect("usize fits in i128") - i128::from(motion.x);
+    let sy = i128::try_from(destination_y).expect("usize fits in i128") - i128::from(motion.y);
+    if sx < 0
+        || sy < 0
+        || sx + 16 > i128::try_from(width).expect("usize fits in i128")
+        || sy + 16 > i128::try_from(height).expect("usize fits in i128")
+    {
         return Err(SurfaceError::OutOfBounds);
     }
+    let sx = usize::try_from(sx).expect("validated source x is nonnegative");
+    let sy = usize::try_from(sy).expect("validated source y is nonnegative");
     let mut scratch = [0_u8; 256];
     for row in 0..16 {
-        let start = (sy as usize + row) * stride + sx as usize;
+        let start = (sy + row) * stride + sx;
         scratch[row * 16..row * 16 + 16].copy_from_slice(&plane[start..start + 16]);
     }
     for row in 0..16 {
@@ -152,7 +158,8 @@ pub fn copy_alpha_motion(
     }
     let mut scratch = [0_u8; 256];
     for row in 0..16 {
-        let start = (src as usize) + row * stride;
+        let start =
+            usize::try_from(src).expect("validated source offset fits usize") + row * stride;
         scratch[row * 16..row * 16 + 16].copy_from_slice(&plane[start..start + 16]);
     }
     for row in 0..16 {
@@ -217,11 +224,11 @@ mod tests {
         let mut plane = vec![0_u8; s * h];
         for y in 0..h {
             for x in 0..w {
-                plane[y * s + x] = (y * w + x) as u8;
+                plane[y * s + x] = (y * w + x).to_le_bytes()[0];
             }
         }
         let source: Vec<u8> = (0..16)
-            .flat_map(|r| (0..16).map(move |c| ((r + 2) * w + c + 2) as u8))
+            .flat_map(|r| (0..16).map(move |c| ((r + 2) * w + c + 2).to_le_bytes()[0]))
             .collect();
         copy_color_motion(&mut plane, s, w, h, 3, 2, Motion { x: 1, y: 0 }).unwrap();
         for r in 0..16 {
@@ -244,10 +251,10 @@ mod tests {
         let (s, h) = (24, 20);
         let mut p = vec![0_u8; s * h];
         for i in 0..p.len() {
-            p[i] = i as u8;
+            p[i] = i.to_le_bytes()[0];
         }
         let source: Vec<u8> = (0..16)
-            .flat_map(|r| (16..32).map(move |c| (r * s + c) as u8))
+            .flat_map(|r| (16..32).map(move |c| (r * s + c).to_le_bytes()[0]))
             .collect();
         copy_alpha_motion(&mut p, s, h, 0, 1, Motion { x: 8, y: 0 }).unwrap();
         for r in 0..16 {

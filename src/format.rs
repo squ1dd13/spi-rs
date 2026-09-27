@@ -185,10 +185,10 @@ pub(crate) fn parse_records(
                 record: records.len(),
             })?;
         let index = bits
-            .read_bits(16)
+            .read_u16(16)
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u16;
+            })?;
         let opaque_byte_a = bits
             .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
@@ -201,10 +201,10 @@ pub(crate) fn parse_records(
             })?
             != 0;
         let opaque_bits = bits
-            .read_bits(2)
+            .read_u8(2)
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let opaque_byte_c = bits
             .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
@@ -221,10 +221,10 @@ pub(crate) fn parse_records(
                 record: records.len(),
             })?;
         let terminal = bits
-            .read_bits(4)
+            .read_u8(4)
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let end_flag = bits
             .read_bit()
             .map_err(|_| FormatError::InvalidRecordHeader {
