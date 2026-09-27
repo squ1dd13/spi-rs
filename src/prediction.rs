@@ -1,5 +1,7 @@
 //! Reference construction and integer intra prediction.
 
+use std::cmp::Ordering;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PredictionError {
     #[error("invalid prediction block width")]
@@ -260,30 +262,32 @@ fn alpha_angular_left(
 }
 
 fn alpha_diagonal(references: &PredictionReferences, row: usize, col: usize) -> u8 {
-    if col > row {
-        let i = col - row - 1;
-        filter3(
-            if i == 0 {
-                references.top_left
-            } else {
-                references.top[i - 1]
-            },
-            references.top[i],
-            references.top[i + 1],
-        )
-    } else if row > col {
-        let i = row - col - 1;
-        filter3(
-            if i == 0 {
-                references.top_left
-            } else {
-                references.left[i - 1]
-            },
-            references.left[i],
-            references.left[i + 1],
-        )
-    } else {
-        filter3(references.left[0], references.top_left, references.top[0])
+    match col.cmp(&row) {
+        Ordering::Greater => {
+            let top_index = col - row - 1;
+            filter3(
+                if top_index == 0 {
+                    references.top_left
+                } else {
+                    references.top[top_index - 1]
+                },
+                references.top[top_index],
+                references.top[top_index + 1],
+            )
+        }
+        Ordering::Less => {
+            let left_index = row - col - 1;
+            filter3(
+                if left_index == 0 {
+                    references.top_left
+                } else {
+                    references.left[left_index - 1]
+                },
+                references.left[left_index],
+                references.left[left_index + 1],
+            )
+        }
+        Ordering::Equal => filter3(references.left[0], references.top_left, references.top[0]),
     }
 }
 

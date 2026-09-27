@@ -131,20 +131,12 @@ fn decode_colour_block(
     state.available[available_index] = 1;
     let result = (|| -> Result<(), DecodeError> {
         match method {
-            0 => spatial_copy(state, planes, geometry, block_x, local_y, global_block_y)?,
+            0 => spatial_copy(state, planes, position)?,
             1 => {
                 let (dx, dy) = read_motion(bits)?;
                 motion_copy(state, planes, position, Motion { x: dx, y: dy })?;
             }
-            2 => residual(
-                bits,
-                state,
-                planes,
-                geometry,
-                block_x,
-                local_y,
-                global_block_y,
-            )?,
+            2 => residual(bits, state, planes, position)?,
             3 => {
                 predictive::decode_block(
                     bits,
@@ -165,15 +157,7 @@ fn decode_colour_block(
                 position,
                 coefficient_histories,
             )?,
-            5 => raw(
-                bits,
-                state,
-                planes,
-                geometry,
-                block_x,
-                local_y,
-                global_block_y,
-            )?,
+            5 => raw(bits, state, planes, position)?,
             _ => unreachable!(),
         }
         Ok(())
@@ -198,20 +182,21 @@ fn at_block(error: DecodeError, record: &Record<'_>, block: usize, bit: usize) -
     })
 }
 
-fn validate_geometry(g: SliceGeometry, s: &ColourState) -> Result<(), DecodeError> {
-    if g.block_width != s.block_width
-        || g.block_rows == 0
-        || g.absolute_block_row
-            .checked_add(g.block_rows)
-            .is_none_or(|end| end > s.total_block_rows)
+fn validate_geometry(geometry: SliceGeometry, state: &ColourState) -> Result<(), DecodeError> {
+    if geometry.block_width != state.block_width
+        || geometry.block_rows == 0
+        || geometry
+            .absolute_block_row
+            .checked_add(geometry.block_rows)
+            .is_none_or(|end| end > state.total_block_rows)
     {
         return Err(invalid("slice geometry does not match colour history"));
     }
-    let padded_width = g
+    let padded_width = geometry
         .block_width
         .checked_mul(16)
         .ok_or_else(|| invalid("slice width overflow"))?;
-    if padded_width != s.stride {
+    if padded_width != state.stride {
         return Err(invalid("slice stride does not match picture"));
     }
     Ok(())
@@ -289,10 +274,7 @@ fn raw(
     bits: &mut BitReader<'_>,
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
-    g: SliceGeometry,
-    bx: usize,
-    ly: usize,
-    gy: usize,
+    position: BlockPosition,
 ) -> Result<(), DecodeError> {
     let pad = (8 - bits.bit_position() % 8) % 8;
     if pad != 0 {
@@ -307,7 +289,7 @@ fn raw(
                 .map_err(|_| invalid("truncated raw block"))?;
         }
     }
-    write_block(state, out, g, bx, ly, gy, &scratch);
+    write_block(state, out, position, &scratch);
     Ok(())
 }
 
@@ -315,29 +297,26 @@ fn residual(
     bits: &mut BitReader<'_>,
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
-    g: SliceGeometry,
-    bx: usize,
-    ly: usize,
-    gy: usize,
+    position: BlockPosition,
 ) -> Result<(), DecodeError> {
     let predicted = bits
         .read_bit()
         .map_err(|_| invalid("truncated residual prediction flag"))?
         == 0;
-    references::update(state, bx, ly, gy)?;
-    let mut scratch = [[0_u8; 512]; 3];
+    references::update(state, position.x, position.local_y, position.global_y)?;
+    let mut scratch = [[0_u8; 256]; 3];
     for plane in &mut scratch {
         decode_rle_plane(bits, plane, 256).map_err(|_| invalid("invalid residual plane"))?;
     }
     if predicted {
-        for (p, plane) in scratch.iter_mut().enumerate() {
-            for i in 0..256 {
-                let reference = if i < 16 {
-                    state.banks[p][i + 1]
+        for (plane_index, plane) in scratch.iter_mut().enumerate() {
+            for sample_index in 0..256 {
+                let reference = if sample_index < 16 {
+                    state.banks[plane_index][sample_index + 1]
                 } else {
-                    plane[i - 16]
+                    plane[sample_index - 16]
                 };
-                let encoded = plane[i];
+                let encoded = plane[sample_index];
                 let delta = i32::from(encoded >> 1) ^ -i32::from(encoded & 1);
                 let mut value = i32::from(reference) + delta * 4;
                 if value > 257 {
@@ -345,16 +324,12 @@ fn residual(
                 } else if value < -2 {
                     value += 260;
                 }
-                plane[i] = u8::try_from(value.clamp(0, 255)).expect("clamped sample fits in u8");
+                plane[sample_index] =
+                    u8::try_from(value.clamp(0, 255)).expect("clamped sample fits in u8");
             }
         }
     }
-    let packed: [[u8; 256]; 3] = [
-        scratch[0][..256].try_into().unwrap(),
-        scratch[1][..256].try_into().unwrap(),
-        scratch[2][..256].try_into().unwrap(),
-    ];
-    write_block(state, out, g, bx, ly, gy, &packed);
+    write_block(state, out, position, &scratch);
     Ok(())
 }
 
@@ -462,12 +437,6 @@ fn palette_block(
     position: BlockPosition,
     histories: &Option<[CoefficientHistory; 3]>,
 ) -> Result<(), DecodeError> {
-    let BlockPosition {
-        geometry: g,
-        x: bx,
-        local_y: ly,
-        global_y: gy,
-    } = position;
     read_palette(bits, palette, out, histories)?;
     if palette.prefix != 0 {
         let mut reader = ContextBitReader::new(record.payload);
@@ -491,23 +460,23 @@ fn palette_block(
                 .map_err(|_| invalid("palette index reader passed stream end"))?;
         }
         let mut samples = [[0_u8; 256]; 3];
-        for i in 0..256 {
-            let index = usize::from(indices[i]);
+        for sample_index in 0..256 {
+            let index = usize::from(indices[sample_index]);
             if index >= palette.entries {
                 return Err(invalid("palette index exceeds palette size"));
             }
-            for (p, sample) in samples.iter_mut().enumerate() {
-                sample[i] = palette.bytes[index * 3 + p];
+            for (plane_index, sample) in samples.iter_mut().enumerate() {
+                sample[sample_index] = palette.bytes[index * 3 + plane_index];
             }
         }
-        write_block(state, out, g, bx, ly, gy, &samples);
+        write_block(state, out, position, &samples);
     } else {
         let samples = [
             [palette.bytes[0]; 256],
             [palette.bytes[1]; 256],
             [palette.bytes[2]; 256],
         ];
-        write_block(state, out, g, bx, ly, gy, &samples);
+        write_block(state, out, position, &samples);
     }
     Ok(())
 }
@@ -515,23 +484,10 @@ fn palette_block(
 fn spatial_copy(
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
-    g: SliceGeometry,
-    bx: usize,
-    ly: usize,
-    gy: usize,
+    position: BlockPosition,
 ) -> Result<(), DecodeError> {
-    let (dx, dy) = if bx == 0 { (0, 16) } else { (16, 0) };
-    motion_copy(
-        state,
-        out,
-        BlockPosition {
-            geometry: g,
-            x: bx,
-            local_y: ly,
-            global_y: gy,
-        },
-        Motion { x: dx, y: dy },
-    )
+    let (dx, dy) = if position.x == 0 { (0, 16) } else { (16, 0) };
+    motion_copy(state, out, position, Motion { x: dx, y: dy })
 }
 
 fn motion_copy(
@@ -540,18 +496,12 @@ fn motion_copy(
     position: BlockPosition,
     motion: Motion,
 ) -> Result<(), DecodeError> {
-    let BlockPosition {
-        geometry: g,
-        x: bx,
-        local_y: ly,
-        global_y: gy,
-    } = position;
-    let x = bx * 16;
-    let global_y = gy * 16;
+    let x = position.x * 16;
+    let global_y = position.global_y * 16;
     let mut scratch = [[0_u8; 256]; 3];
-    for (p, plane) in scratch.iter_mut().enumerate() {
+    for (plane_index, plane) in scratch.iter_mut().enumerate() {
         copy_colour_motion(
-            &mut state.planes[p],
+            &mut state.planes[plane_index],
             state.stride,
             state.stride,
             state.total_block_rows * 16,
@@ -562,30 +512,29 @@ fn motion_copy(
         .map_err(|_| invalid("motion source is outside picture history"))?;
         for row in 0..16 {
             let src = (global_y + row) * state.stride + x;
-            plane[row * 16..row * 16 + 16].copy_from_slice(&state.planes[p][src..src + 16]);
+            plane[row * 16..row * 16 + 16]
+                .copy_from_slice(&state.planes[plane_index][src..src + 16]);
         }
     }
-    write_block(state, out, g, bx, ly, gy, &scratch);
+    write_block(state, out, position, &scratch);
     Ok(())
 }
 
-fn write_block<const N: usize>(
+fn write_block(
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
-    _g: SliceGeometry,
-    bx: usize,
-    ly: usize,
-    gy: usize,
-    samples: &[[u8; N]; 3],
+    position: BlockPosition,
+    samples: &[[u8; 256]; 3],
 ) {
-    let x = bx * 16;
-    for p in 0..3 {
+    let x = position.x * 16;
+    for plane_index in 0..3 {
         for row in 0..16 {
-            let local = (ly * 16 + row) * state.stride + x;
-            let global = (gy * 16 + row) * state.stride + x;
-            out[p][local..local + 16].copy_from_slice(&samples[p][row * 16..row * 16 + 16]);
-            state.planes[p][global..global + 16]
-                .copy_from_slice(&samples[p][row * 16..row * 16 + 16]);
+            let local = (position.local_y * 16 + row) * state.stride + x;
+            let global = (position.global_y * 16 + row) * state.stride + x;
+            out[plane_index][local..local + 16]
+                .copy_from_slice(&samples[plane_index][row * 16..row * 16 + 16]);
+            state.planes[plane_index][global..global + 16]
+                .copy_from_slice(&samples[plane_index][row * 16..row * 16 + 16]);
         }
     }
 }

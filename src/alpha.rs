@@ -445,35 +445,39 @@ fn construct_refs(
 }
 
 fn alpha_signed_four(
-    l: &[i16; 33],
-    t: &[i16; 33],
+    left: &[i16; 33],
+    top: &[i16; 33],
     width: usize,
     signed: &mut [i16; 256],
 ) -> Result<(), DecodeError> {
     let mut main = [0_i16; 65];
-    main[32..65].copy_from_slice(t);
+    main[32..65].copy_from_slice(top);
     let mut sum = 128;
-    let last = match width {
+    let last: isize = match width {
         4 => -2,
         8 => -3,
-        _ => -6,
+        16 => -6,
+        _ => return Err(invalid("invalid component width")),
     };
-    for i in (last as isize..=-1_isize).rev() {
+    for index in (last..=-1_isize).rev() {
         sum += 630;
-        main[usize::try_from(32_isize + i).expect("angular index is nonnegative")] =
-            l[usize::try_from(sum >> 8).expect("angular index is nonnegative")];
+        main[usize::try_from(32_isize + index).expect("angular index is nonnegative")] =
+            left[usize::try_from(sum >> 8).expect("angular index is nonnegative")];
     }
-    for r in 0..width {
-        let d = -((i32::try_from(r).expect("block width is at most 16") + 1) * 13);
+    for row in 0..width {
+        let d = -((i32::try_from(row).expect("block width is at most 16") + 1) * 13);
         let integer = d >> 5;
         let frac = d & 31;
-        for c in 0..width {
-            let i = usize::try_from(
-                32 + i32::try_from(c).expect("block width is at most 16") + integer + 1,
+        for column in 0..width {
+            let main_index = usize::try_from(
+                32 + i32::try_from(column).expect("block width is at most 16") + integer + 1,
             )
             .expect("angular index is nonnegative");
-            signed[r * width + c] = i16::try_from(
-                ((32 - frac) * i32::from(main[i]) + frac * i32::from(main[i + 1]) + 16) >> 5,
+            signed[row * width + column] = i16::try_from(
+                ((32 - frac) * i32::from(main[main_index])
+                    + frac * i32::from(main[main_index + 1])
+                    + 16)
+                    >> 5,
             )
             .expect("interpolated byte fits in i16");
         }

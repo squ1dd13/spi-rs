@@ -14,7 +14,7 @@ pub(super) fn update(
     if block_x >= state.block_width || global_y >= state.total_block_rows {
         return Err(invalid("colour boundary is outside picture"));
     }
-    refresh(state, block_x, local_y, global_y)?;
+    refresh(state, block_x, local_y, global_y);
     if local_y == 0 {
         if block_x == 0 {
             for p in 0..3 {
@@ -41,10 +41,10 @@ pub(super) fn update(
             block_x != 0 && state.available[(global_y - 1) * state.block_width + block_x - 1] != 0;
         let above_right = block_x + 1 < state.block_width
             && state.available[(global_y - 1) * state.block_width + block_x + 1] != 0;
-        let code = (if above_left { 0x1000 } else { 0 })
-            | (if above_right { 0x0100 } else { 0 })
-            | (if above { 0x0010 } else { 0 })
-            | (if left { 1 } else { 0 });
+        let code = (u16::from(above_left) << 12)
+            | (u16::from(above_right) << 8)
+            | (u16::from(above) << 4)
+            | u16::from(left);
         let (top, lower) = state.banks.split_at_mut(4);
         for p in 0..3 {
             transition(code, &mut top[p], &mut lower[p]);
@@ -75,17 +75,12 @@ pub(super) fn update(
     Ok(())
 }
 
-fn refresh(
-    state: &mut ColourState,
-    bx: usize,
-    local_y: usize,
-    gy: usize,
-) -> Result<(), DecodeError> {
-    let x = bx * 16;
-    let y = gy * 16;
+fn refresh(state: &mut ColourState, block_x: usize, local_y: usize, global_y: usize) {
+    let x = block_x * 16;
+    let y = global_y * 16;
     if local_y != 0 {
         for p in 0..3 {
-            if bx == 0 {
+            if block_x == 0 {
                 state.banks[p][0] = 128;
             } else {
                 state.banks[p][0] = state.planes[p][(y - 1) * state.stride + x - 1];
@@ -98,12 +93,12 @@ fn refresh(
         }
     }
     for p in 0..3 {
-        state.banks[p + 4][0] = if local_y == 0 || bx == 0 {
+        state.banks[p + 4][0] = if local_y == 0 || block_x == 0 {
             128
         } else {
             state.planes[p][(y - 1) * state.stride + x - 1]
         };
-        if bx == 0 {
+        if block_x == 0 {
             state.banks[p + 4][1..17].fill(128);
         } else {
             for row in 0..16 {
@@ -111,7 +106,6 @@ fn refresh(
             }
         }
     }
-    Ok(())
 }
 
 fn transition(code: u16, top: &mut [u8; 33], left: &mut [u8; 33]) {

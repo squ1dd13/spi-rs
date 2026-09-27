@@ -744,6 +744,16 @@ impl CoefficientHistory {
     }
 }
 
+const HISTORY_SPECIAL_SYMBOL: u8 = 0x11;
+
+fn history_mode(symbol: u8) -> u8 {
+    if symbol == HISTORY_SPECIAL_SYMBOL {
+        2
+    } else {
+        symbol
+    }
+}
+
 fn read_context_history_symbol(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,
@@ -762,7 +772,7 @@ fn read_context_history_symbol(
     let delayed = history.bytes[slot - history.stride];
     let previous_neutral = history.neutral[slot - 1];
     let delayed_neutral = history.neutral[slot - history.stride];
-    let mode = if previous == 0x11 { 2 } else { previous };
+    let mode = history_mode(previous);
     if reader.available == 0 && !reader.refill(4) {
         return Err(EntropyError::InvalidCode);
     }
@@ -806,7 +816,7 @@ fn read_context_history_symbol(
                 return Err(EntropyError::InvalidCode);
             }
             output = if reader.accumulator & 0x8000_0000 != 0 {
-                0x11
+                u32::from(HISTORY_SPECIAL_SYMBOL)
             } else {
                 2
             };
@@ -814,7 +824,7 @@ fn read_context_history_symbol(
             reader.available -= 1;
         }
     } else {
-        let candidate = if delayed == 0x11 { 2 } else { delayed };
+        let candidate = history_mode(delayed);
         output = u32::from(mode);
         if mode != candidate {
             if reader.available == 0 && !reader.refill(4) {
@@ -1014,7 +1024,7 @@ pub fn decode_contextual_component(
         }
         let coefficient_count = (1_u32 << count_width) + suffix;
         let raw_mode = result.modes[slot];
-        let scan_variant = if request.colour_long_symbols || raw_mode == 0x11 {
+        let scan_variant = if request.colour_long_symbols || raw_mode == HISTORY_SPECIAL_SYMBOL {
             0
         } else {
             *MODE_SCAN_VARIANT
