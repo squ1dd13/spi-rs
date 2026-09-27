@@ -64,7 +64,7 @@ mod tests {
     }
 
     fn record_data(stream: &[u8]) -> Vec<u8> {
-        let mut data = vec![0u8; 14];
+        let mut data = vec![0_u8; 14];
         data.extend_from_slice(stream);
         data
     }
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn raw_block_starts_on_byte_boundary_and_keeps_planes() {
         // raw method 5 is 00 11; skip to the next byte, then 3 x 256 samples.
-        let mut stream = vec![0u8; 769];
+        let mut stream = vec![0_u8; 769];
         stream[0] = 0b0011_0000;
         stream[1..257].fill(12);
         stream[257..513].fill(34);
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn raw_picture_history_is_used_by_next_slice() {
         let first_data = record_data(&{
-            let mut bytes = vec![0u8; 769];
+            let mut bytes = vec![0_u8; 769];
             bytes[0] = 0b0011_0000;
             bytes[1..257].fill(91);
             bytes[257..513].fill(92);

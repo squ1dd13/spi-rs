@@ -40,7 +40,7 @@ pub(crate) fn parse_container(input: &[u8]) -> Result<Container<'_>, FormatError
         return Err(FormatError::TruncatedContainer);
     }
     let picture_len = u32::from_le_bytes(input[..4].try_into().expect("length checked")) as usize;
-    let picture_end = 4usize
+    let picture_end = 4_usize
         .checked_add(picture_len)
         .ok_or(FormatError::InvalidContainerLength)?;
     if picture_end > input.len() || input.len() - picture_end < 4 {
@@ -138,7 +138,7 @@ pub(crate) fn parse_records(
     records
         .try_reserve(max_records.min(payload.len() / 14))
         .map_err(|_| FormatError::AllocationFailure)?;
-    let mut offset = 0usize;
+    let mut offset = 0_usize;
     while offset < payload.len() {
         if records.len() == max_records {
             return Err(FormatError::TooManyRecords);

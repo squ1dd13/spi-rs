@@ -49,7 +49,7 @@ pub(super) fn decode_block(
         .read_value(1)
         .ok_or_else(|| invalid("truncated luma layout"))?
         != 0;
-    let mut signed = [[0i16; 256]; 3];
+    let mut signed = [[0_i16; 256]; 3];
     if luma_subdivided {
         for component in 0..4 {
             let result = decode_component(
@@ -157,7 +157,7 @@ pub(super) fn decode_block(
             .map_err(|_| invalid("predictive reader passed stream end"))?;
     }
 
-    let mut converted = [[0u8; 256]; 3];
+    let mut converted = [[0_u8; 256]; 3];
     for i in 0..256 {
         let co = i32::from(signed[1][i]) - 256;
         let luma = i32::from(signed[0][i]) as u32 & 0xffff;
@@ -284,7 +284,7 @@ fn reconstruct_component(
         return Err(invalid("invalid predictive component dimensions"));
     }
     let width = component.width as usize;
-    let mut residual = [0i16; 256];
+    let mut residual = [0_i16; 256];
     if width == 16 {
         if component.callbacks[0] != CallbackKind::Inactive {
             inverse_transform_16x16(
@@ -295,8 +295,8 @@ fn reconstruct_component(
             .map_err(|e| DecodeError::Coefficients(CoefficientError::Transform(Box::new(e))))?;
         }
     } else {
-        let mut coeffs = [[0i16; 64]; 4];
-        let mut callbacks = [0u8; 4];
+        let mut coeffs = [[0_i16; 64]; 4];
+        let mut callbacks = [0_u8; 4];
         for slot in 0..component.count {
             coeffs[slot][..width * width].copy_from_slice(&component.values[slot][..width * width]);
             callbacks[slot] = match component.callbacks[slot] {
@@ -328,8 +328,8 @@ fn reconstruct_component(
     // The source stream keeps each component argument's constructor buffers
     // alive across its slots. Some selectors write only part of a reference
     // edge, so later slots can consume values written by earlier slots.
-    let mut slot_left = [0i16; 33];
-    let mut slot_top = [0i16; 33];
+    let mut slot_left = [0_i16; 33];
+    let mut slot_top = [0_i16; 33];
     for slot in 0..component.count {
         let width = component.width as usize;
         let slot_x = offset_x + if width == 4 { (slot & 1) * 4 } else { 0 };
@@ -350,7 +350,7 @@ fn reconstruct_component(
             &mut slot_left,
             &mut slot_top,
         )?;
-        let mut pred = [0i16; 256];
+        let mut pred = [0_i16; 256];
         predict(
             component.modes[slot],
             width,
@@ -554,8 +554,8 @@ fn predict(
         let refs = build_signed_references(left, top);
         return predict_signed_planar(&refs, width, out).map_err(prediction_error);
     }
-    let mut filtered_left = [0i16; 33];
-    let mut filtered_top = [0i16; 33];
+    let mut filtered_left = [0_i16; 33];
+    let mut filtered_top = [0_i16; 33];
     let needs_filter = if width == 4 {
         matches!(mode, 3 | 6 | 9)
     } else if width == 8 {

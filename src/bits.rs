@@ -93,7 +93,7 @@ impl<'a> ContextBitReader<'a> {
         }
         let source_offset = bit / 8;
         let shift = (bit & 7) as u32;
-        let mut word = 0u32;
+        let mut word = 0_u32;
         for byte in &self.data[source_offset..source_offset + 4] {
             word = (word << 8) | u32::from(*byte);
         }
@@ -113,7 +113,7 @@ impl<'a> ContextBitReader<'a> {
             return false;
         }
         let take = count.min((self.size - self.byte_offset) as u32);
-        let mut word = 0u32;
+        let mut word = 0_u32;
         for byte in &self.data[self.byte_offset..self.byte_offset + take as usize] {
             word = (word << 8) | u32::from(*byte);
         }
@@ -149,7 +149,7 @@ impl<'a> ContextBitReader<'a> {
             return None;
         }
         let mut remaining = count;
-        let mut result = 0u32;
+        let mut result = 0_u32;
         while remaining != 0 {
             if self.available == 0 && !self.refill(4) {
                 return None;
@@ -216,7 +216,7 @@ mod tests {
         #[test]
         fn small_ordinary_reader_inputs_match_msb_reference(
             input in prop::collection::vec(any::<u8>(), 0..24),
-            count in 0u32..33,
+            count in 0_u32..33,
         ) {
             let mut bits = BitReader::new(&input);
             let result = bits.read_bits(count);
@@ -225,7 +225,7 @@ mod tests {
             } else if input.len().saturating_mul(8) < count as usize {
                 prop_assert_eq!(result, Err(BitError::EndOfInput));
             } else {
-                let mut expected = 0u32;
+                let mut expected = 0_u32;
                 for position in 0..count as usize {
                     expected = (expected << 1)
                         | u32::from((input[position / 8] >> (7 - (position & 7))) & 1);

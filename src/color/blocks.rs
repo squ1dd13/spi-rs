@@ -242,7 +242,7 @@ fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
     {
         return Ok((0, 16));
     }
-    let mut result = [0i32; 2];
+    let mut result = [0_i32; 2];
     for value in &mut result {
         let zeros = read_unary(bits, 31)?;
         if zeros >= 31 {
@@ -254,7 +254,7 @@ fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
             bits.read_bits(zeros)
                 .map_err(|_| invalid("truncated motion code"))?
         };
-        let code = (1u32 << zeros) + suffix;
+        let code = (1_u32 << zeros) + suffix;
         let signed = if code & 1 != 0 {
             -((code >> 1) as i64)
         } else {
@@ -284,7 +284,7 @@ fn raw(
         bits.read_bits(pad as u32)
             .map_err(|_| invalid("truncated raw block alignment"))?;
     }
-    let mut scratch = [[0u8; 256]; 3];
+    let mut scratch = [[0_u8; 256]; 3];
     for plane in &mut scratch {
         for sample in plane {
             *sample = bits
@@ -310,7 +310,7 @@ fn residual(
         .map_err(|_| invalid("truncated residual prediction flag"))?
         == 0;
     references::update(state, bx, ly, gy)?;
-    let mut scratch = [[0u8; 512]; 3];
+    let mut scratch = [[0_u8; 512]; 3];
     for plane in &mut scratch {
         decode_rle_plane(bits, plane, 256).map_err(|_| invalid("invalid residual plane"))?;
     }
@@ -421,7 +421,7 @@ fn palette_block(
         if !reader.initialize_at_bit(bits.bit_position()) {
             return Err(invalid("invalid palette index reader"));
         }
-        let mut indices = [0u8; 256];
+        let mut indices = [0_u8; 256];
         decode_contextual_indices(&mut reader, palette.prefix, &mut indices).map_err(|error| {
             DecodeError::Coefficients(CoefficientError::Syntax(Box::new(error))).at(
                 crate::ErrorContext {
@@ -436,7 +436,7 @@ fn palette_block(
             bits.read_bits(take)
                 .map_err(|_| invalid("palette index reader passed stream end"))?;
         }
-        let mut samples = [[0u8; 256]; 3];
+        let mut samples = [[0_u8; 256]; 3];
         for i in 0..256 {
             let index = usize::from(indices[i]);
             if index >= palette.entries {
@@ -491,7 +491,7 @@ fn motion_copy(
 ) -> Result<(), DecodeError> {
     let x = bx * 16;
     let global_y = gy * 16;
-    let mut scratch = [[0u8; 256]; 3];
+    let mut scratch = [[0_u8; 256]; 3];
     for p in 0..3 {
         copy_color_motion(
             &mut state.planes[p],

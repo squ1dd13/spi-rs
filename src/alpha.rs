@@ -157,7 +157,7 @@ fn read_motion(reader: &mut ContextBitReader<'_>) -> Result<Motion, DecodeError>
     {
         return Ok(Motion { x: 0, y: 16 });
     }
-    let mut values = [0i32; 2];
+    let mut values = [0_i32; 2];
     for value in &mut values {
         let mut zeros = 0;
         loop {
@@ -180,7 +180,7 @@ fn read_motion(reader: &mut ContextBitReader<'_>) -> Result<Motion, DecodeError>
                 .read_value(zeros)
                 .ok_or_else(|| invalid("truncated motion suffix"))?
         };
-        let code = (1u32 << zeros) + suffix;
+        let code = (1_u32 << zeros) + suffix;
         let decoded = if code & 1 != 0 {
             -((code / 2) as i32)
         } else {
@@ -426,14 +426,14 @@ fn predict(
             .map_err(|_| invalid("width-four alpha prediction failed"))?;
         return Ok(());
     }
-    let mut left = [0i16; 33];
-    let mut top = [0i16; 33];
+    let mut left = [0_i16; 33];
+    let mut top = [0_i16; 33];
     for i in 0..=2 * width {
         left[i] = i16::from(left_u8[i]);
         top[i] = i16::from(top_u8[i]);
     }
-    let mut fl = [0i16; 33];
-    let mut ft = [0i16; 33];
+    let mut fl = [0_i16; 33];
+    let mut ft = [0_i16; 33];
     let filtered = mode != 17
         && ((width == 4 && matches!(mode, 3 | 6 | 9))
             || (width == 8 && (3..=8).contains(&mode))
@@ -444,7 +444,7 @@ fn predict(
     }
     let l = if filtered { &fl } else { &left };
     let t = if filtered { &ft } else { &top };
-    let mut signed = [0i16; 256];
+    let mut signed = [0_i16; 256];
     match mode {
         0 | 1 => {
             for r in 0..width {
@@ -463,7 +463,7 @@ fn predict(
             }
         }
         4 => {
-            let mut main = [0i16; 65];
+            let mut main = [0_i16; 65];
             for i in 0..33 {
                 main[32 + i] = t[i];
             }
@@ -475,9 +475,9 @@ fn predict(
             } else {
                 -6
             };
-            for i in (last as isize..=-1isize).rev() {
+            for i in (last as isize..=-1_isize).rev() {
                 sum += 630;
-                main[(32isize + i) as usize] = l[(sum >> 8) as usize];
+                main[(32_isize + i) as usize] = l[(sum >> 8) as usize];
             }
             for r in 0..width {
                 let d = -((r as i32 + 1) * 13);
@@ -521,13 +521,13 @@ fn predict(
         }
         7 => {
             if width == 4 {
-                let mut main = [0i16; 34];
+                let mut main = [0_i16; 34];
                 for i in 0..17 {
                     main[16 + i] = l[i];
                 }
-                for i in (-16isize..=-1isize).rev() {
+                for i in (-16_isize..=-1_isize).rev() {
                     let side = ((-i * 630 + 128) >> 8) as usize;
-                    main[(16isize + i) as usize] = t[side.min(16) + 1];
+                    main[(16_isize + i) as usize] = t[side.min(16) + 1];
                 }
                 for r in 0..4 {
                     for c in 0..4 {
@@ -766,7 +766,7 @@ pub(crate) fn decode_slice(
                             bit,
                         ));
                     }
-                    for argument in 0..4u32 {
+                    for argument in 0..4_u32 {
                         let component = decode_contextual_component(
                             &mut reader,
                             &mut history,
@@ -792,8 +792,8 @@ pub(crate) fn decode_slice(
                         let width = usize::from(component.width);
                         // Constructors may write only part of each side. Their
                         // remaining samples persist across slots in one argument.
-                        let mut left = [0u8; 33];
-                        let mut top = [0u8; 33];
+                        let mut left = [0_u8; 33];
+                        let mut top = [0_u8; 33];
                         for slot in 0..component.count {
                             let base_x = dst_x
                                 + (argument as usize & 1) * 8
@@ -819,10 +819,10 @@ pub(crate) fn decode_slice(
                                 &mut top,
                             )
                             .map_err(|e| at(e, record, block, reader.logical_bit()))?;
-                            let mut pred = [0u8; 256];
+                            let mut pred = [0_u8; 256];
                             predict(&left, &top, width, component.modes[slot], &mut pred)
                                 .map_err(|e| at(e, record, block, reader.logical_bit()))?;
-                            let mut reconstructed = [0u8; 256];
+                            let mut reconstructed = [0_u8; 256];
                             apply_component(
                                 width,
                                 component.modes[slot],
@@ -951,7 +951,7 @@ mod tests {
     }
 
     fn raw_record(value: u8) -> Vec<u8> {
-        let mut bytes = vec![0u8; 14 + 1 + 256];
+        let mut bytes = vec![0_u8; 14 + 1 + 256];
         bytes[14] = 0x30;
         bytes[15..].fill(value);
         bytes
@@ -969,7 +969,7 @@ mod tests {
     #[test]
     fn unsupported_alpha_methods_have_typed_errors() {
         for (method, byte) in [(2, 0x00), (4, 0x20)] {
-            let mut bytes = vec![0u8; 18];
+            let mut bytes = vec![0_u8; 18];
             bytes[14] = byte;
             let mut state = AlphaState::new(1, 1).unwrap();
             let error = decode_slice(&record(&bytes), geometry(0, 1), 112, &mut state).unwrap_err();
@@ -986,7 +986,7 @@ mod tests {
         decode_slice(&record(&first), geometry(0, 1), 112, &mut state).unwrap();
         assert_eq!(&state.next_row_top_banks[0][1..17], &[77; 16]);
 
-        let mut second = vec![0u8; 18];
+        let mut second = vec![0_u8; 18];
         second[14] = 0x60; // motion method, default vector (0, 16)
         let decoded = decode_slice(&record(&second), geometry(1, 1), 112, &mut state).unwrap();
         assert_eq!(&decoded.plane[..16], &[77; 16]);

@@ -40,7 +40,7 @@ impl ColorState {
             .try_reserve_exact(blocks)
             .map_err(|_| allocation("color block state"))?;
         available.resize(blocks, 0);
-        let mut banks = [[0u8; 33]; 9];
+        let mut banks = [[0_u8; 33]; 9];
         banks[8].fill(128);
         Ok(Self {
             block_width,

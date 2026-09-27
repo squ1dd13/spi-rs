@@ -129,7 +129,7 @@ fn check_memory(
         descriptors,
     ]
     .into_iter()
-    .try_fold(0usize, |sum, n| checked_add(sum, n, resource, limit))?;
+    .try_fold(0_usize, |sum, n| checked_add(sum, n, resource, limit))?;
     if total > limit {
         return Err(DecodeError::ResourceLimit {
             resource,
@@ -141,7 +141,7 @@ fn check_memory(
 }
 
 fn check_live_memory(parts: &[usize], limit: usize) -> Result<(), DecodeError> {
-    let total = parts.iter().try_fold(0usize, |sum, part| {
+    let total = parts.iter().try_fold(0_usize, |sum, part| {
         checked_add(sum, *part, "decoder memory", limit)
     })?;
     if total > limit {
@@ -284,7 +284,7 @@ pub(crate) fn decode_with_limits(
         ],
         limits.max_memory_bytes,
     )?;
-    let mut covered_rows = 0usize;
+    let mut covered_rows = 0_usize;
     for (index, record) in records.iter().enumerate() {
         if usize::from(record.index) != index {
             return Err(DecodeError::Coverage {

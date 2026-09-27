@@ -44,7 +44,7 @@ pub(crate) fn read_signed_rice(
         bits.read_bits(prefix)
             .map_err(|_| EntropyError::InvalidCode)?
     };
-    let magnitude = (1u32 << prefix) + suffix - 1;
+    let magnitude = (1_u32 << prefix) + suffix - 1;
     let sign = bits.read_bit().map_err(|_| EntropyError::InvalidCode)?;
     Ok(if sign != 0 {
         -(magnitude as i32)
@@ -63,8 +63,8 @@ pub(crate) fn decode_rle_plane(
     if output_size > output.len() {
         return Err(EntropyError::OutputOverflow);
     }
-    let (mut previous_previous, mut previous) = (0xffu8, 0u8);
-    let mut produced = 0usize;
+    let (mut previous_previous, mut previous) = (0xff_u8, 0_u8);
+    let mut produced = 0_usize;
     while produced < output_size {
         if previous == previous_previous {
             let prefix = read_unary_prefix(bits, 31)?;
@@ -75,7 +75,7 @@ pub(crate) fn decode_rle_plane(
                     .map_err(|_| EntropyError::InvalidCode)?
             };
             // The stream stores this run count in an 8-bit register.
-            let run = (((1u32 << prefix) - 1) + suffix) as u8 as usize;
+            let run = (((1_u32 << prefix) - 1) + suffix) as u8 as usize;
             let end = produced
                 .checked_add(run)
                 .ok_or(EntropyError::OutputOverflow)?;
@@ -201,7 +201,7 @@ pub(crate) fn read_context_index(
         }
         suffix
     };
-    let index = ((1u32 << width) - 1) + suffix;
+    let index = ((1_u32 << width) - 1) + suffix;
     Ok((width, suffix, index))
 }
 
@@ -215,7 +215,7 @@ pub(crate) fn decode_contextual_indices(
         return Err(EntropyError::InvalidCode);
     }
     indices.fill(0);
-    let mut cursor = 0u32;
+    let mut cursor = 0_u32;
     let mut prefix_bits = initial_prefix_bits;
     while cursor < 256 {
         let old_accumulator = reader.accumulator;
@@ -290,7 +290,7 @@ pub(crate) fn decode_contextual_indices(
             reader.accumulator = lz(reader.accumulator, bits_for_code);
             reader.available -= bits_for_code;
         }
-        let mut code_value = 0u32;
+        let mut code_value = 0_u32;
         if code_width != 0 {
             let current_accumulator = reader.accumulator;
             let current_available = reader.available;
@@ -320,14 +320,14 @@ pub(crate) fn decode_contextual_indices(
         let mask = if code_width == 0 {
             0
         } else {
-            (1u32 << code_width) - 1
+            (1_u32 << code_width) - 1
         };
         let run_control = code_value.wrapping_add(mask);
         if run_control.wrapping_add(cursor) > 255 {
             return Err(EntropyError::InvalidCode);
         }
         if run_control >= 1 {
-            let advance = (1u32 << code_width).wrapping_add(code_value);
+            let advance = (1_u32 << code_width).wrapping_add(code_value);
             if literal_cursor + advance > indices.len() as u32 {
                 return Err(EntropyError::OutputOverflow);
             }
@@ -522,8 +522,8 @@ pub(crate) fn coefficient_scan_position(
     if variant == 2 {
         return Ok(((scan_index % 16) * 16 + scan_index / 16) as u16);
     }
-    let mut cursor = 0u32;
-    for diagonal in 0..31u32 {
+    let mut cursor = 0_u32;
+    for diagonal in 0..31_u32 {
         let first = diagonal.saturating_sub(15);
         let last = diagonal.min(15);
         if diagonal & 1 != 0 {
@@ -564,7 +564,7 @@ pub(crate) fn decode_scanned_coefficient(
     let payload = reader
         .read_value(width + 1)
         .ok_or(EntropyError::InvalidCode)?;
-    let code = (1u32 << width) + (payload >> 1);
+    let code = (1_u32 << width) + (payload >> 1);
     let (delta, magnitude) = if width > 6 {
         let partition = code
             .checked_sub(if color_long_symbol { 1 } else { 0x80 })
@@ -578,7 +578,7 @@ pub(crate) fn decode_scanned_coefficient(
             )
         } else {
             (
-                partition & ((1u32 << partition_shift) - 1),
+                partition & ((1_u32 << partition_shift) - 1),
                 (partition >> partition_shift) + 1,
             )
         }
@@ -885,7 +885,7 @@ pub(crate) fn decode_contextual_component(
         return Err(EntropyError::InvalidCode);
     }
     let component_count = if request.fixed_width != 0 {
-        1usize
+        1_usize
     } else {
         ((state_bit + 1) << state_bit) as usize
     };
@@ -940,8 +940,8 @@ pub(crate) fn decode_contextual_component(
         if count_width >= 31 {
             return Err(EntropyError::InvalidCode);
         }
-        let count = (1u32 << count_width) + suffix;
-        let mut cursor = 0u32;
+        let count = (1_u32 << count_width) + suffix;
+        let mut cursor = 0_u32;
         for _ in 0..count {
             let (position, value) =
                 decode_scanned_coefficient(reader, 8, 16, 0, &mut cursor, true)?;
@@ -981,7 +981,7 @@ pub(crate) fn decode_contextual_component(
         if count_width >= 31 {
             return Err(EntropyError::InvalidCode);
         }
-        let coefficient_count = (1u32 << count_width) + suffix;
+        let coefficient_count = (1_u32 << count_width) + suffix;
         let raw_mode = result.modes[slot];
         let scan_variant = if request.color_long_symbols || raw_mode == 0x11 {
             0
@@ -997,7 +997,7 @@ pub(crate) fn decode_contextual_component(
             16 => 8,
             _ => unreachable!(),
         };
-        let mut cursor = 0u32;
+        let mut cursor = 0_u32;
         for _ in 0..coefficient_count {
             let (position, value) = decode_scanned_coefficient(
                 reader,
