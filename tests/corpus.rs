@@ -83,13 +83,13 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
         if !valid_hash(&case.input_sha256) {
             return Err(format!("{} has invalid input_sha256", case.file.display()));
         }
-        if let Some(header) = &case.header {
-            if header.width == 0 || header.height == 0 {
-                return Err(format!(
-                    "{} has a zero header dimension",
-                    case.file.display()
-                ));
-            }
+        if let Some(header) = &case.header
+            && (header.width == 0 || header.height == 0)
+        {
+            return Err(format!(
+                "{} has a zero header dimension",
+                case.file.display()
+            ));
         }
         match &case.expect {
             Expectation::Image { .. } if case.header.is_none() => {

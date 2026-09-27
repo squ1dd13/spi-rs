@@ -321,56 +321,56 @@ fn construct_refs(
             1 => {
                 top[..9].copy_from_slice(&top_bank[4..13]);
                 left[0] = top[0];
-                vertical(&mut left, 4, true)?;
+                vertical(left, 4, true)?;
             }
             2 => {
                 left[..9].copy_from_slice(&left_bank[4..13]);
                 top[0] = left[0];
-                above(&mut top, 8, false)?;
+                above(top, 8, false)?;
             }
             3 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(&mut left, 4, true)?;
-                above(&mut top, 4, false)?;
+                vertical(left, 4, true)?;
+                above(top, 4, false)?;
             }
             4 => {
                 top[..9].copy_from_slice(&top_bank[8..17]);
                 left[0] = top[0];
-                vertical(&mut left, 8, false)?;
+                vertical(left, 8, false)?;
             }
             5 => {
                 top[..9].copy_from_slice(&top_bank[12..21]);
                 left[0] = top[0];
-                vertical(&mut left, 4, true)?;
+                vertical(left, 4, true)?;
             }
             6 | 9 | 14 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(&mut left, 4, true)?;
-                above(&mut top, 8, false)?;
+                vertical(left, 4, true)?;
+                above(top, 8, false)?;
             }
             7 | 11 | 13 | 15 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(&mut left, 4, true)?;
-                above(&mut top, 4, true)?;
+                vertical(left, 4, true)?;
+                above(top, 4, true)?;
             }
             8 => {
                 left[..9].copy_from_slice(&left_bank[8..17]);
                 top[0] = left[0];
-                above(&mut top, 8, false)?;
+                above(top, 8, false)?;
             }
             10 => {
                 left[..9].copy_from_slice(&left_bank[12..21]);
                 top[0] = left[0];
-                above(&mut top, 8, false)?;
+                above(top, 8, false)?;
             }
             12 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(&mut left, 8, false)?;
-                above(&mut top, 8, false)?;
+                vertical(left, 8, false)?;
+                above(top, 8, false)?;
             }
             _ => return Err(invalid("invalid width-four reference selector")),
         },
@@ -382,18 +382,18 @@ fn construct_refs(
             1 => {
                 top[..17].copy_from_slice(&top_bank[8..25]);
                 left[0] = top[0];
-                vertical(&mut left, 8, true)?;
+                vertical(left, 8, true)?;
             }
             2 => {
                 left[..17].copy_from_slice(&left_bank[8..25]);
                 top[0] = left[0];
-                above(&mut top, 16, false)?;
+                above(top, 16, false)?;
             }
             3 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(&mut left, 8, true)?;
-                above(&mut top, 8, true)?;
+                vertical(left, 8, true)?;
+                above(top, 8, true)?;
             }
             _ => return Err(invalid("invalid width-eight reference selector")),
         },

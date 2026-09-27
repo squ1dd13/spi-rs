@@ -21,7 +21,7 @@ pub(crate) fn read_unary_prefix(
     max_zeros: u32,
 ) -> Result<u32, EntropyError> {
     for zeros in 0..max_zeros {
-        match bits.read_bits(1) {
+        match bits.read_bit() {
             Ok(1) => return Ok(zeros),
             Ok(_) => {}
             Err(_) => return Err(EntropyError::InvalidCode),
@@ -45,7 +45,7 @@ pub(crate) fn read_signed_rice(
             .map_err(|_| EntropyError::InvalidCode)?
     };
     let magnitude = (1u32 << prefix) + suffix - 1;
-    let sign = bits.read_bits(1).map_err(|_| EntropyError::InvalidCode)?;
+    let sign = bits.read_bit().map_err(|_| EntropyError::InvalidCode)?;
     Ok(if sign != 0 {
         -(magnitude as i32)
     } else {
@@ -94,7 +94,9 @@ pub(crate) fn decode_rle_plane(
         } else if prefix == 21 && remainder <= 2 {
             remainder | 0x54
         } else {
-            bits.read_bits(8).map_err(|_| EntropyError::InvalidCode)?
+            bits.read_byte()
+                .map(|v| v as u32)
+                .map_err(|_| EntropyError::InvalidCode)?
         } as u8;
         if produced < output_size {
             output[produced] = literal;
@@ -141,10 +143,10 @@ pub(crate) fn read_context_prefix(reader: &mut ContextBitReader<'_>) -> Result<u
 
     let mut candidate = reader.accumulator >> (32 - lookahead);
     let next_byte_shift = lookahead as i32 - available_for_lookahead as i32;
-    if (1..=8).contains(&next_byte_shift) {
-        if let Some(next_byte) = reader.peek_next_byte() {
-            candidate |= u32::from(next_byte) >> (8 - next_byte_shift as u32);
-        }
+    if (1..=8).contains(&next_byte_shift)
+        && let Some(next_byte) = reader.peek_next_byte()
+    {
+        candidate |= u32::from(next_byte) >> (8 - next_byte_shift as u32);
     }
     let mut zeroes = leading_zeroes((candidate >> 24) as u8);
     if zeroes == 8 {
@@ -219,12 +221,11 @@ pub(crate) fn decode_contextual_indices(
         let old_accumulator = reader.accumulator;
         let old_available = reader.available;
         let mut bits_for_literal = prefix_bits.wrapping_sub(old_available);
-        let literal;
-        if (bits_for_literal as i32) <= 0 {
+        let literal = if (bits_for_literal as i32) <= 0 {
             bits_for_literal = prefix_bits;
             reader.accumulator = lz(old_accumulator, bits_for_literal);
             reader.available = old_available - bits_for_literal;
-            literal = old_accumulator >> (32 - bits_for_literal);
+            old_accumulator >> (32 - bits_for_literal)
         } else {
             if !reader.refill(4) {
                 return Err(EntropyError::InvalidCode);
@@ -234,8 +235,8 @@ pub(crate) fn decode_contextual_indices(
             let new_accumulator = reader.accumulator;
             reader.accumulator = lz(new_accumulator, bits_for_literal);
             reader.available -= bits_for_literal;
-            literal = (new_accumulator >> suffix_shift) | prefix_fragment;
-        }
+            (new_accumulator >> suffix_shift) | prefix_fragment
+        };
         let literal_cursor = cursor;
         indices[literal_cursor as usize] = literal as u8;
 
@@ -258,10 +259,10 @@ pub(crate) fn decode_contextual_indices(
         }
         let mut candidate = reader.accumulator >> (32 - lookahead_bits);
         let next_shift = lookahead_bits as i32 - available_after_lookahead as i32;
-        if next_shift >= 1 {
-            if let Some(next) = reader.peek_next_byte() {
-                candidate |= u32::from(next) >> (8 - next_shift as u32);
-            }
+        if next_shift >= 1
+            && let Some(next) = reader.peek_next_byte()
+        {
+            candidate |= u32::from(next) >> (8 - next_shift as u32);
         }
         let mut code_width = leading_zeroes((candidate >> 24) as u8);
         if code_width == 8 {
@@ -868,10 +869,11 @@ pub(crate) fn decode_contextual_component(
     history: &mut CoefficientHistory,
     request: ComponentRequest,
 ) -> Result<ComponentResult, EntropyError> {
-    let mut state_bit = 0u32;
-    if request.fixed_width == 0 && !request.width_selector_already_read {
-        state_bit = reader.read_value(1).ok_or(EntropyError::InvalidCode)?;
-    }
+    let state_bit = if request.fixed_width == 0 && !request.width_selector_already_read {
+        reader.read_value(1).ok_or(EntropyError::InvalidCode)?
+    } else {
+        0
+    };
     let width = if request.fixed_width >= 16 {
         16
     } else if request.fixed_width != 0 {

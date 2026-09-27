@@ -55,17 +55,17 @@ pub(super) fn decode_slice(
     let mut coefficient_histories: Option<[CoefficientHistory; 3]> = None;
     for local_y in 0..geometry.block_rows {
         let global_block_y = state.global_row(local_y, geometry.absolute_block_row)?;
-        if local_y != 0 {
-            if let Some(histories) = coefficient_histories.as_mut() {
-                for (plane, history) in histories.iter_mut().enumerate() {
-                    history
-                        .begin_block_row(local_y as u16, plane != 0)
-                        .map_err(|error| {
-                            DecodeError::Coefficients(crate::error::CoefficientError::Syntax(
-                                Box::new(error),
-                            ))
-                        })?;
-                }
+        if local_y != 0
+            && let Some(histories) = coefficient_histories.as_mut()
+        {
+            for (plane, history) in histories.iter_mut().enumerate() {
+                history
+                    .begin_block_row(local_y as u16, plane != 0)
+                    .map_err(|error| {
+                        DecodeError::Coefficients(crate::error::CoefficientError::Syntax(Box::new(
+                            error,
+                        )))
+                    })?;
             }
         }
         for block_x in 0..geometry.block_width {
@@ -204,13 +204,13 @@ fn validate_geometry(g: SliceGeometry, s: &ColorState) -> Result<(), DecodeError
 
 fn read_method(bits: &mut BitReader<'_>) -> Result<u8, DecodeError> {
     let first = bits
-        .read_bits(1)
+        .read_bit()
         .map_err(|_| invalid("truncated block method"))?;
     if first != 0 {
         return Ok(0);
     }
     let second = bits
-        .read_bits(1)
+        .read_bit()
         .map_err(|_| invalid("truncated block method"))?;
     if second != 0 {
         return Ok(1);
@@ -224,7 +224,7 @@ fn read_method(bits: &mut BitReader<'_>) -> Result<u8, DecodeError> {
 fn read_unary(bits: &mut BitReader<'_>, limit: u32) -> Result<u32, DecodeError> {
     for n in 0..limit {
         if bits
-            .read_bits(1)
+            .read_bit()
             .map_err(|_| invalid("truncated unary code"))?
             != 0
         {
@@ -236,7 +236,7 @@ fn read_unary(bits: &mut BitReader<'_>, limit: u32) -> Result<u32, DecodeError> 
 
 fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
     if bits
-        .read_bits(1)
+        .read_bit()
         .map_err(|_| invalid("truncated motion syntax"))?
         != 0
     {
@@ -288,8 +288,8 @@ fn raw(
     for plane in &mut scratch {
         for sample in plane {
             *sample = bits
-                .read_bits(8)
-                .map_err(|_| invalid("truncated raw block"))? as u8;
+                .read_byte()
+                .map_err(|_| invalid("truncated raw block"))?;
         }
     }
     write_block(state, out, g, bx, ly, gy, &scratch);
@@ -306,7 +306,7 @@ fn residual(
     gy: usize,
 ) -> Result<(), DecodeError> {
     let predicted = bits
-        .read_bits(1)
+        .read_bit()
         .map_err(|_| invalid("truncated residual prediction flag"))?
         == 0;
     references::update(state, bx, ly, gy)?;
@@ -356,7 +356,7 @@ fn palette_block(
     gy: usize,
 ) -> Result<(), DecodeError> {
     let marker = bits
-        .read_bits(1)
+        .read_bit()
         .map_err(|_| invalid("truncated palette marker"))?;
     if marker == 0 {
         if palette.prefix == 0 {
@@ -364,7 +364,7 @@ fn palette_block(
         }
     } else {
         let variant = bits
-            .read_bits(1)
+            .read_bit()
             .map_err(|_| invalid("truncated palette variant"))?;
         let prefix = bits
             .read_bits(4)
@@ -374,9 +374,8 @@ fn palette_block(
             palette.bytes.clear();
             for _ in 0..3 {
                 palette.bytes.push(
-                    bits.read_bits(8)
-                        .map_err(|_| invalid("truncated single-entry palette"))?
-                        as u8,
+                    bits.read_byte()
+                        .map_err(|_| invalid("truncated single-entry palette"))?,
                 );
             }
             palette.entries = 1;
@@ -408,9 +407,8 @@ fn palette_block(
                 ensure_capacity(&mut palette.bytes, add, "color palette")?;
                 for _ in 0..add {
                     palette.bytes.push(
-                        bits.read_bits(8)
-                            .map_err(|_| invalid("truncated palette entries"))?
-                            as u8,
+                        bits.read_byte()
+                            .map_err(|_| invalid("truncated palette entries"))?,
                     );
                 }
             }

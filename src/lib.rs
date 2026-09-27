@@ -6,6 +6,48 @@
 //! complete record named by that error.
 
 #![forbid(unsafe_code)]
+#![warn(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::cast_sign_loss,
+    clippy::char_lit_as_u8,
+    clippy::checked_conversions,
+    clippy::dbg_macro,
+    clippy::debug_assert_with_mut_call,
+    clippy::doc_link_with_quotes,
+    clippy::doc_markdown,
+    clippy::empty_line_after_outer_attr,
+    clippy::float_cmp_const,
+    clippy::float_cmp,
+    clippy::float_equality_without_abs,
+    clippy::missing_panics_doc,
+    clippy::mod_module_files,
+    clippy::option_if_let_else,
+    clippy::redundant_pub_crate,
+    clippy::semicolon_if_nothing_returned,
+    clippy::shadow_unrelated,
+    clippy::similar_names,
+    clippy::suspicious_operation_groupings,
+    clippy::todo,
+    clippy::too_many_lines,
+    clippy::unnecessary_cast,
+    clippy::unneeded_field_pattern,
+    clippy::unnested_or_patterns,
+    clippy::unseparated_literal_suffix,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_let_if_seq,
+    clippy::wildcard_dependencies,
+    clippy::wildcard_imports,
+    keyword_idents,
+    non_ascii_idents,
+    noop_method_call,
+    unused_crate_dependencies,
+    unused_extern_crates,
+    unused_import_braces
+)]
 
 mod alpha;
 mod bits;

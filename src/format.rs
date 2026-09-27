@@ -180,22 +180,22 @@ pub(crate) fn parse_records(
         let bits = crate::bits::BitReader::new(header_bytes);
         let mut bits = bits;
         let opaque_byte_b = bits
-            .read_bits(8)
+            .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let index = bits
             .read_bits(16)
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
             })? as u16;
         let opaque_byte_a = bits
-            .read_bits(8)
+            .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let opaque_flag = bits
-            .read_bits(1)
+            .read_bit()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
             })?
@@ -206,27 +206,27 @@ pub(crate) fn parse_records(
                 record: records.len(),
             })? as u8;
         let opaque_byte_c = bits
-            .read_bits(8)
+            .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let opaque_byte_d = bits
-            .read_bits(8)
+            .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let opaque_byte_e = bits
-            .read_bits(8)
+            .read_byte()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
-            })? as u8;
+            })?;
         let terminal = bits
             .read_bits(4)
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
             })? as u8;
         let end_flag = bits
-            .read_bits(1)
+            .read_bit()
             .map_err(|_| FormatError::InvalidRecordHeader {
                 record: records.len(),
             })?

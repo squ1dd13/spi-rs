@@ -49,6 +49,16 @@ impl<'a> BitReader<'a> {
         self.bit_position += count as usize;
         Ok(value)
     }
+
+    pub(crate) fn read_bit(&mut self) -> Result<u8, BitError> {
+        #[allow(clippy::cast_possible_truncation)]
+        self.read_bits(1).map(|v| v as u8)
+    }
+
+    pub(crate) fn read_byte(&mut self) -> Result<u8, BitError> {
+        #[allow(clippy::cast_possible_truncation)]
+        self.read_bits(8).map(|v| v as u8)
+    }
 }
 
 /// Context reader that matches the format's 32-bit accumulator refill rules.

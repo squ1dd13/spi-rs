@@ -615,7 +615,7 @@ fn predict(
         return predict_signed_side_directional(&filtered_left, width, out)
             .map_err(prediction_error);
     }
-    if mode >= 9 && mode <= 16 {
+    if (9..=16).contains(&mode) {
         let direction = prediction_direction_for_mode(mode)
             .ok_or_else(|| invalid("unsupported signed prediction mode"))?;
         let (l, t) = if needs_filter {
