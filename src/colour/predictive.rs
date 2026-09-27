@@ -416,8 +416,8 @@ fn construct_colour_refs_eight(
     Ok(())
 }
 
-struct ColourEdgeReader<'a> {
-    workspace: &'a [i16; 256],
+struct ColourEdgeReader<'data> {
+    workspace: &'data [i16; 256],
     origin: usize,
     component_x: usize,
     component_y: usize,

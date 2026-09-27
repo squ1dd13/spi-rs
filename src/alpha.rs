@@ -273,8 +273,8 @@ fn transition(code: u16, top: &mut [u8; 33], left: &mut [u8; 33]) {
     }
 }
 
-struct AlphaEdgeReader<'a> {
-    plane: &'a [u8],
+struct AlphaEdgeReader<'data> {
+    plane: &'data [u8],
     stride: usize,
     origin: usize,
     x: usize,
@@ -526,8 +526,8 @@ fn alpha_signed_seven(
 fn predict_signed_mode(
     left: &[i16; 33],
     top: &[i16; 33],
-    l: &[i16; 33],
-    t: &[i16; 33],
+    left_reference: &[i16; 33],
+    top_reference: &[i16; 33],
     width: usize,
     mode: u8,
     signed: &mut [i16; 256],
@@ -536,7 +536,11 @@ fn predict_signed_mode(
         0 | 1 => {
             for r in 0..width {
                 for c in 0..width {
-                    signed[r * width + c] = if mode == 0 { t[c + 1] } else { l[r + 1] };
+                    signed[r * width + c] = if mode == 0 {
+                        top_reference[c + 1]
+                    } else {
+                        left_reference[r + 1]
+                    };
                 }
             }
         }
@@ -545,11 +549,15 @@ fn predict_signed_mode(
         3 => {
             for r in 0..width {
                 for c in 0..width {
-                    signed[r * width + c] = if c >= r { t[c - r] } else { l[r - c] };
+                    signed[r * width + c] = if c >= r {
+                        top_reference[c - r]
+                    } else {
+                        left_reference[r - c]
+                    };
                 }
             }
         }
-        4 => alpha_signed_four(l, t, width, signed)?,
+        4 => alpha_signed_four(left_reference, top_reference, width, signed)?,
         5 => {
             for r in 0..width {
                 let d = (r + 1) * 13;
@@ -558,7 +566,10 @@ fn predict_signed_mode(
                 for c in 0..width {
                     let n = c + i + 1;
                     signed[r * width + c] = i16::try_from(
-                        ((32 - f) * i32::from(t[n]) + f * i32::from(t[n + 1]) + 16) >> 5,
+                        ((32 - f) * i32::from(top_reference[n])
+                            + f * i32::from(top_reference[n + 1])
+                            + 16)
+                            >> 5,
                     )
                     .expect("interpolated byte fits in i16");
                 }
@@ -570,17 +581,21 @@ fn predict_signed_mode(
                     signed[r * width + c] = if width == 4 {
                         let i = r + c;
                         if i >= 6 {
-                            t[8]
+                            top_reference[8]
                         } else {
-                            (t[i + 1] + 2 * t[i + 2] + t[i + 3] + 2) >> 2
+                            (top_reference[i + 1]
+                                + 2 * top_reference[i + 2]
+                                + top_reference[i + 3]
+                                + 2)
+                                >> 2
                         }
                     } else {
-                        t[r + c + 2]
+                        top_reference[r + c + 2]
                     };
                 }
             }
         }
-        7 => alpha_signed_seven(l, t, width, signed)?,
+        7 => alpha_signed_seven(left_reference, top_reference, width, signed)?,
         8 => {
             for r in 0..width {
                 for c in 0..width {
@@ -588,17 +603,17 @@ fn predict_signed_mode(
                     let i = r + (d >> 5) + 1;
                     let f = i32::try_from(d & 31).expect("fraction is at most 31");
                     signed[r * width + c] = i16::try_from(
-                        ((32 - f) * i32::from(l[i]) + f * i32::from(l[i + 1]) + 16) >> 5,
+                        ((32 - f) * i32::from(left_reference[i])
+                            + f * i32::from(left_reference[i + 1])
+                            + 16)
+                            >> 5,
                     )
                     .expect("interpolated byte fits in i16");
                 }
             }
         }
         9..=16 => {
-            let direction = prediction_direction_for_mode(mode)
-                .ok_or_else(|| invalid("invalid angular mode"))?;
-            predict_signed_angular(l, t, width, direction, &mut signed[..width * width])
-                .map_err(|_| invalid("angular prediction failed"))?;
+            predict_signed_angular_mode(left_reference, top_reference, width, mode, signed)?;
         }
         17 => {
             let mut refs = SignedReferences::default();
@@ -610,6 +625,25 @@ fn predict_signed_mode(
         _ => return Err(invalid("unsupported prediction mode")),
     }
     Ok(())
+}
+
+fn predict_signed_angular_mode(
+    left_reference: &[i16; 33],
+    top_reference: &[i16; 33],
+    width: usize,
+    mode: u8,
+    signed: &mut [i16; 256],
+) -> Result<(), DecodeError> {
+    let direction =
+        prediction_direction_for_mode(mode).ok_or_else(|| invalid("invalid angular mode"))?;
+    predict_signed_angular(
+        left_reference,
+        top_reference,
+        width,
+        direction,
+        &mut signed[..width * width],
+    )
+    .map_err(|_| invalid("angular prediction failed"))
 }
 
 fn predict(
@@ -695,13 +729,13 @@ fn apply_component(
     }
 }
 
-struct AlphaBlockContext<'a, 'b> {
-    record: &'a Record<'b>,
+struct AlphaBlockContext<'data, 'record> {
+    record: &'data Record<'record>,
     geometry: SliceGeometry,
-    state: &'a mut AlphaState,
-    reader: &'a mut ContextBitReader<'b>,
-    history: &'a mut CoefficientHistory,
-    plane: &'a mut [u8],
+    state: &'data mut AlphaState,
+    reader: &'data mut ContextBitReader<'record>,
+    history: &'data mut CoefficientHistory,
+    plane: &'data mut [u8],
     stride: usize,
 }
 
@@ -831,9 +865,9 @@ fn prepare_alpha_banks(
     let top_available = absolute_row != 0 && previous[block_x] != 0;
     let left_available = block_x != 0 && current[block_x - 1] != 0;
     if block_y != 0 {
-        let code = u16::from(block_x > 0 && previous[block_x - 1] != 0) << 12
-            | u16::from(block_x + 1 < geometry.block_width && previous[block_x + 1] != 0) << 8
-            | u16::from(top_available) << 4
+        let code = (u16::from(block_x > 0 && previous[block_x - 1] != 0) << 12)
+            | (u16::from(block_x + 1 < geometry.block_width && previous[block_x + 1] != 0) << 8)
+            | (u16::from(top_available) << 4)
             | u16::from(left_available);
         transition(code, &mut state.top_bank, &mut state.left_bank);
     } else if block_x == 0 {

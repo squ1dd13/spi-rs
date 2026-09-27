@@ -196,10 +196,10 @@ fn compose_rows(
     Ok(())
 }
 
-struct RecordDecodeContext<'a> {
-    output: &'a mut Vec<u8>,
-    colour_state: &'a mut crate::colour::ColourState,
-    alpha_state: &'a mut Option<crate::alpha::AlphaState>,
+struct RecordDecodeContext<'data> {
+    output: &'data mut Vec<u8>,
+    colour_state: &'data mut crate::colour::ColourState,
+    alpha_state: &'data mut Option<crate::alpha::AlphaState>,
     width: usize,
     height: usize,
     blocks_x: usize,

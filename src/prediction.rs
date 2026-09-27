@@ -606,12 +606,10 @@ pub fn predict_signed_width4_diagonal(
     }
     for row in 0..4 {
         for col in 0..4 {
-            output[row * 4 + col] = if col > row {
-                filtered_top[col - row]
-            } else if row > col {
-                filtered_left[row - col]
-            } else {
-                filtered_left[0]
+            output[row * 4 + col] = match col.cmp(&row) {
+                std::cmp::Ordering::Greater => filtered_top[col - row],
+                std::cmp::Ordering::Less => filtered_left[row - col],
+                std::cmp::Ordering::Equal => filtered_left[0],
             };
         }
     }

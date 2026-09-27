@@ -93,9 +93,9 @@ pub struct ImageInfo {
     pub selector: u8,
 }
 
-/// Limits for one decode call. The memory limit covers decoder-owned output,
-/// persistent planes, slice storage, record views, and context storage. It
-/// excludes the caller's input buffer, allocator overhead, and PNG encoding.
+/// Limits for one decode call.
+///
+/// The memory limit covers decoder-owned output, persistent planes, slice storage, record views, and context storage. It excludes the caller's input buffer, allocator overhead, and PNG encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeLimits {
     pub max_input_bytes: usize,

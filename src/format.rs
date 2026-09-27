@@ -30,9 +30,9 @@ pub enum FormatError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Container<'a> {
-    pub picture: &'a [u8],
-    pub records: &'a [u8],
+pub struct Container<'data> {
+    pub picture: &'data [u8],
+    pub records: &'data [u8],
 }
 
 pub fn parse_container(input: &[u8]) -> Result<Container<'_>, FormatError> {
@@ -117,11 +117,11 @@ pub struct RecordHeader {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Record<'a> {
+pub struct Record<'data> {
     /// The complete record, including its 6-byte framing header.
-    pub data: &'a [u8],
+    pub data: &'data [u8],
     /// Codec payload after the 6-byte framing and 8-byte syntax header.
-    pub payload: &'a [u8],
+    pub payload: &'data [u8],
     pub payload_offset: usize,
     pub index: u16,
     pub stream_offset: usize,

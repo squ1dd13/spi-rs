@@ -10,14 +10,14 @@ pub enum BitError {
 }
 
 /// A checked, MSB-first reader for ordinary bounded syntax.
-pub struct BitReader<'a> {
-    input: &'a [u8],
-    inner: IoBitReader<&'a [u8], BigEndian>,
+pub struct BitReader<'data> {
+    input: &'data [u8],
+    inner: IoBitReader<&'data [u8], BigEndian>,
     bit_position: usize,
 }
 
-impl<'a> BitReader<'a> {
-    pub(crate) fn new(input: &'a [u8]) -> Self {
+impl<'data> BitReader<'data> {
+    pub(crate) fn new(input: &'data [u8]) -> Self {
         Self {
             input,
             inner: IoBitReader::new(input),
@@ -78,16 +78,16 @@ impl<'a> BitReader<'a> {
 /// Context reader that matches the format's 32-bit accumulator refill rules.
 /// Lookahead may inspect a bounded following byte through `peek_next_byte`.
 #[derive(Debug, Clone)]
-pub struct ContextBitReader<'a> {
-    pub(crate) data: &'a [u8],
+pub struct ContextBitReader<'data> {
+    pub(crate) data: &'data [u8],
     pub(crate) size: usize,
     pub(crate) byte_offset: usize,
     pub(crate) accumulator: u32,
     pub(crate) available: u32,
 }
 
-impl<'a> ContextBitReader<'a> {
-    pub(crate) fn new(data: &'a [u8]) -> Self {
+impl<'data> ContextBitReader<'data> {
+    pub(crate) fn new(data: &'data [u8]) -> Self {
         Self {
             data,
             size: data.len(),
