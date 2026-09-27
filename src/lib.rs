@@ -49,6 +49,11 @@
     unused_import_braces
 )]
 
+#[cfg(feature = "cli")]
+use {clap as _, env_logger as _};
+#[cfg(test)]
+use {serde as _, serde_json as _, sha2 as _};
+
 mod alpha;
 mod bits;
 mod colour;

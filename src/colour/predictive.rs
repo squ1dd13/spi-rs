@@ -27,19 +27,63 @@ fn low_byte(value: i16) -> u8 {
     value.to_le_bytes()[0]
 }
 
+struct PlaneRequest {
+    plane: usize,
+    block_x: usize,
+    payload_offset: usize,
+    alternate_profile: bool,
+    subdivided: bool,
+}
+
+fn decode_predictive_plane(
+    reader: &mut ContextBitReader<'_>,
+    history: &mut CoefficientHistory,
+    state: &ColourState,
+    request: PlaneRequest,
+    output: &mut [i16; 256],
+) -> Result<(), DecodeError> {
+    let count = if request.subdivided { 4 } else { 1 };
+    let horizontal_offset = u16::try_from(request.block_x * 16)
+        .map_err(|_| invalid("predictive block offset overflow"))?;
+    for component in 0..count {
+        let result = decode_component(
+            reader,
+            history,
+            ComponentRequest {
+                argument: u32::try_from(component).expect("component argument is at most four"),
+                horizontal_offset,
+                maximum_width: if request.subdivided { 8 } else { 16 },
+                fixed_width: 0,
+                colour_long_symbols: true,
+                width_selector_already_read: !request.subdivided,
+            },
+            request.plane * 4 + component,
+            request.payload_offset,
+        )?;
+        reconstruct_component(
+            &result,
+            request.alternate_profile,
+            (
+                &state.histories[request.plane + 3],
+                &state.histories[request.plane],
+            ),
+            (request.plane, component, count),
+            output,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn decode_block(
     bits: &mut BitReader<'_>,
     record: &Record<'_>,
     state: &mut ColourState,
     output: &mut [Vec<u8>; 3],
     geometry: SliceGeometry,
-    block_x: usize,
-    local_y: usize,
-    global_y: usize,
-    block_index: usize,
-    _method_start: usize,
+    position: (usize, usize, usize),
     histories: &mut Option<[CoefficientHistory; 3]>,
 ) -> Result<(), DecodeError> {
+    let (block_x, local_y, global_y) = position;
     ensure_histories(histories, state.block_width, geometry.block_rows, local_y)?;
     let histories = histories.as_mut().expect("histories initialised");
     references::update(state, block_x, local_y, global_y)?;
@@ -51,110 +95,28 @@ pub(super) fn decode_block(
     let initialised = reader
         .read_value(1)
         .ok_or_else(|| invalid("truncated predictive state"))?;
-    let luma_subdivided = reader
-        .read_value(1)
-        .ok_or_else(|| invalid("truncated luma layout"))?
-        != 0;
     let mut signed = [[0_i16; 256]; 3];
-    if luma_subdivided {
-        for component in 0..4 {
-            let result = decode_component(
-                &mut reader,
-                &mut histories[0],
-                component,
-                block_x,
-                8,
-                0,
-                false,
-                component,
-                record.payload_offset,
-            )?;
-            reconstruct_component(
-                &result,
-                initialised == 0,
-                &state.histories[3],
-                &state.histories[0],
-                0,
-                component,
-                4,
-                &mut signed[0],
-            )?;
-        }
-    } else {
-        let result = decode_component(
+    for plane in 0..3 {
+        let subdivided = reader.read_value(1).ok_or_else(|| {
+            invalid(if plane == 0 {
+                "truncated luma layout"
+            } else {
+                "truncated chroma layout"
+            })
+        })? != 0;
+        decode_predictive_plane(
             &mut reader,
-            &mut histories[0],
-            0,
-            block_x,
-            16,
-            0,
-            true,
-            0,
-            record.payload_offset,
-        )?;
-        reconstruct_component(
-            &result,
-            initialised == 0,
-            &state.histories[3],
-            &state.histories[0],
-            0,
-            0,
-            1,
-            &mut signed[0],
-        )?;
-    }
-    for plane in 1..3 {
-        let subdivided = reader
-            .read_value(1)
-            .ok_or_else(|| invalid("truncated chroma layout"))?
-            != 0;
-        if subdivided {
-            for component in 0..4 {
-                let result = decode_component(
-                    &mut reader,
-                    &mut histories[plane],
-                    component,
-                    block_x,
-                    8,
-                    0,
-                    false,
-                    plane * 4 + component,
-                    record.payload_offset,
-                )?;
-                reconstruct_component(
-                    &result,
-                    initialised == 0,
-                    &state.histories[plane + 3],
-                    &state.histories[plane],
-                    plane,
-                    component,
-                    4,
-                    &mut signed[plane],
-                )?;
-            }
-        } else {
-            let result = decode_component(
-                &mut reader,
-                &mut histories[plane],
-                0,
-                block_x,
-                16,
-                0,
-                true,
-                plane * 4,
-                record.payload_offset,
-            )?;
-            reconstruct_component(
-                &result,
-                initialised == 0,
-                &state.histories[plane + 3],
-                &state.histories[plane],
+            &mut histories[plane],
+            state,
+            PlaneRequest {
                 plane,
-                0,
-                1,
-                &mut signed[plane],
-            )?;
-        }
+                block_x,
+                payload_offset: record.payload_offset,
+                alternate_profile: initialised == 0,
+                subdivided,
+            },
+            &mut signed[plane],
+        )?;
     }
     let final_bit = reader.logical_bit();
     while bits.bit_position() < final_bit {
@@ -209,7 +171,6 @@ pub(super) fn decode_block(
             state.planes[p][hist..hist + 16].copy_from_slice(&converted[p][src..src + 16]);
         }
     }
-    let _ = (geometry, block_index);
     Ok(())
 }
 
@@ -250,27 +211,11 @@ fn ensure_histories(
 fn decode_component(
     reader: &mut ContextBitReader<'_>,
     history: &mut CoefficientHistory,
-    argument: usize,
-    block_x: usize,
-    maximum_width: u8,
-    fixed_width: u8,
-    width_selector_already_read: bool,
+    request: ComponentRequest,
     component_index: usize,
     payload_offset: usize,
 ) -> Result<ComponentResult, DecodeError> {
-    let result = decode_contextual_component(
-        reader,
-        history,
-        ComponentRequest {
-            argument: u32::try_from(argument).expect("component argument is at most four"),
-            horizontal_offset: u16::try_from(block_x * 16)
-                .map_err(|_| invalid("predictive block offset overflow"))?,
-            maximum_width,
-            fixed_width,
-            colour_long_symbols: true,
-            width_selector_already_read,
-        },
-    );
+    let result = decode_contextual_component(reader, history, request);
     result.map_err(|error| {
         coefficient_error(error).at(crate::ErrorContext {
             component: Some(component_index),
@@ -280,30 +225,18 @@ fn decode_component(
     })
 }
 
-fn reconstruct_component(
+fn reconstruct_residual(
     component: &ComponentResult,
     alternate_profile: bool,
-    left: &[i16; 33],
-    top: &[i16; 33],
-    plane: usize,
-    argument: usize,
-    component_count: usize,
-    output: &mut [i16; 256],
+    residual: &mut [i16; 256],
 ) -> Result<(), DecodeError> {
-    if component.count == 0
-        || component.count > 4
-        || component.width as usize * component.width as usize > 256
-    {
-        return Err(invalid("invalid predictive component dimensions"));
-    }
-    let width = component.width as usize;
-    let mut residual = [0_i16; 256];
+    let width = usize::from(component.width);
     if width == 16 {
         if component.callbacks[0] != CallbackKind::Inactive {
             inverse_transform_16x16(
                 &component.values[0],
                 if alternate_profile { 160 } else { 144 },
-                &mut residual,
+                residual,
             )
             .map_err(|e| DecodeError::Coefficients(CoefficientError::Transform(Box::new(e))))?;
         }
@@ -324,10 +257,31 @@ fn reconstruct_component(
             &coeffs,
             &callbacks,
             alternate_profile,
-            &mut residual,
+            residual,
         )
         .map_err(|e| DecodeError::Coefficients(CoefficientError::Transform(Box::new(e))))?;
     }
+    Ok(())
+}
+
+fn reconstruct_component(
+    component: &ComponentResult,
+    alternate_profile: bool,
+    banks: (&[i16; 33], &[i16; 33]),
+    position: (usize, usize, usize),
+    output: &mut [i16; 256],
+) -> Result<(), DecodeError> {
+    let (left, top) = banks;
+    let (plane, argument, component_count) = position;
+    if component.count == 0
+        || component.count > 4
+        || component.width as usize * component.width as usize > 256
+    {
+        return Err(invalid("invalid predictive component dimensions"));
+    }
+    let width = component.width as usize;
+    let mut residual = [0_i16; 256];
+    reconstruct_residual(component, alternate_profile, &mut residual)?;
     let offset_x = if component_count == 4 {
         (argument & 1) * 8
     } else {
@@ -344,7 +298,6 @@ fn reconstruct_component(
     let mut slot_left = [0_i16; 33];
     let mut slot_top = [0_i16; 33];
     for slot in 0..component.count {
-        let width = component.width as usize;
         let slot_x = offset_x + if width == 4 { (slot & 1) * 4 } else { 0 };
         let slot_y = offset_y + if width == 4 { (slot >> 1) * 4 } else { 0 };
         let selector = if width == 4 {
@@ -355,13 +308,10 @@ fn reconstruct_component(
         construct_colour_refs(
             width,
             selector,
-            left,
-            top,
+            (left, top),
             output,
-            slot_x,
-            slot_y,
-            &mut slot_left,
-            &mut slot_top,
+            (slot_x, slot_y),
+            (&mut slot_left, &mut slot_top),
         )?;
         let mut pred = [0_i16; 256];
         predict(
@@ -387,88 +337,124 @@ fn reconstruct_component(
     Ok(())
 }
 
+fn construct_colour_refs_eight(
+    selector: usize,
+    banks: (&[i16; 33], &[i16; 33]),
+    workspace: &[i16; 256],
+    position: (usize, usize),
+    edges: (&mut [i16; 33], &mut [i16; 33]),
+) -> Result<(), DecodeError> {
+    let (left_bank, top_bank) = banks;
+    let (component_x, component_y) = position;
+    let (left, top) = edges;
+    let origin = component_y * 16 + component_x;
+    match selector {
+        0 => {
+            left[..17].copy_from_slice(&left_bank[..17]);
+            top[..17].copy_from_slice(&top_bank[..17]);
+        }
+        1 if component_x != 0 => {
+            top[..17].copy_from_slice(&top_bank[8..25]);
+            left[0] = top[0];
+            for i in 0..8 {
+                left[i + 1] = workspace[origin - 1 + i * 16];
+            }
+            let edge = left[8];
+            left[9..17].fill(edge);
+        }
+        2 if component_y != 0 => {
+            left[..17].copy_from_slice(&left_bank[8..25]);
+            top[0] = left[0];
+            top[1..17].copy_from_slice(&workspace[origin - 16..origin]);
+        }
+        3 if component_x != 0 && component_y != 0 => {
+            left[0] = workspace[origin - 17];
+            top[0] = left[0];
+            for i in 0..8 {
+                left[i + 1] = workspace[origin - 1 + i * 16];
+                top[i + 1] = workspace[origin - 16 + i];
+            }
+            let left_edge = left[8];
+            let top_edge = top[8];
+            left[9..17].fill(left_edge);
+            top[9..17].fill(top_edge);
+        }
+        _ => return Err(invalid("invalid width-eight colour reference selector")),
+    }
+    Ok(())
+}
+
+struct ColourEdgeReader<'a> {
+    workspace: &'a [i16; 256],
+    origin: usize,
+    component_x: usize,
+    component_y: usize,
+}
+
+impl ColourEdgeReader<'_> {
+    fn vertical(&self, count: usize, extend: bool, out: &mut [i16; 33]) -> bool {
+        if self.component_x == 0 {
+            return false;
+        }
+        for i in 0..count {
+            out[i + 1] = self.workspace[self.origin - 1 + i * 16];
+        }
+        if extend {
+            let edge = out[count];
+            out[count + 1..9].fill(edge);
+        }
+        true
+    }
+
+    fn above(&self, count: usize, extend: bool, out: &mut [i16; 33]) -> bool {
+        if self.component_y == 0 {
+            return false;
+        }
+        for i in 0..count {
+            out[i + 1] = self.workspace[self.origin - 16 + i];
+        }
+        if extend {
+            let edge = out[count];
+            out[count + 1..9].fill(edge);
+        }
+        true
+    }
+}
+
 fn construct_colour_refs(
     width: usize,
     selector: usize,
-    left_bank: &[i16; 33],
-    top_bank: &[i16; 33],
+    banks: (&[i16; 33], &[i16; 33]),
     workspace: &[i16; 256],
-    component_x: usize,
-    component_y: usize,
-    left: &mut [i16; 33],
-    top: &mut [i16; 33],
+    position: (usize, usize),
+    edges: (&mut [i16; 33], &mut [i16; 33]),
 ) -> Result<(), DecodeError> {
+    let (left_bank, top_bank) = banks;
+    let (component_x, component_y) = position;
+    let (left, top) = edges;
     if width == 16 {
         *left = *left_bank;
         *top = *top_bank;
         return Ok(());
     }
     if width == 8 {
-        let origin = component_y * 16 + component_x;
-        match selector {
-            0 => {
-                left[..17].copy_from_slice(&left_bank[..17]);
-                top[..17].copy_from_slice(&top_bank[..17]);
-            }
-            1 if component_x != 0 => {
-                top[..17].copy_from_slice(&top_bank[8..25]);
-                left[0] = top[0];
-                for i in 0..8 {
-                    left[i + 1] = workspace[origin - 1 + i * 16];
-                }
-                let edge = left[8];
-                left[9..17].fill(edge);
-            }
-            2 if component_y != 0 => {
-                left[..17].copy_from_slice(&left_bank[8..25]);
-                top[0] = left[0];
-                top[1..17].copy_from_slice(&workspace[origin - 16..origin]);
-            }
-            3 if component_x != 0 && component_y != 0 => {
-                left[0] = workspace[origin - 17];
-                top[0] = left[0];
-                for i in 0..8 {
-                    left[i + 1] = workspace[origin - 1 + i * 16];
-                    top[i + 1] = workspace[origin - 16 + i];
-                }
-                let left_edge = left[8];
-                let top_edge = top[8];
-                left[9..17].fill(left_edge);
-                top[9..17].fill(top_edge);
-            }
-            _ => return Err(invalid("invalid width-eight colour reference selector")),
-        }
-        return Ok(());
+        return construct_colour_refs_eight(
+            selector,
+            (left_bank, top_bank),
+            workspace,
+            (component_x, component_y),
+            (left, top),
+        );
     }
     if width != 4 || selector > 15 {
         return Err(invalid("invalid width-four colour reference selector"));
     }
     let origin = component_y * 16 + component_x;
-    let vertical = |count: usize, extend: bool, out: &mut [i16; 33]| -> bool {
-        if component_x == 0 {
-            return false;
-        }
-        for i in 0..count {
-            out[i + 1] = workspace[origin - 1 + i * 16];
-        }
-        if extend {
-            let edge = out[count];
-            out[count + 1..9].fill(edge);
-        }
-        true
-    };
-    let above = |count: usize, extend: bool, out: &mut [i16; 33]| -> bool {
-        if component_y == 0 {
-            return false;
-        }
-        for i in 0..count {
-            out[i + 1] = workspace[origin - 16 + i];
-        }
-        if extend {
-            let edge = out[count];
-            out[count + 1..9].fill(edge);
-        }
-        true
+    let edge_reader = ColourEdgeReader {
+        workspace,
+        origin,
+        component_x,
+        component_y,
     };
     let ok = match selector {
         0 => {
@@ -479,52 +465,52 @@ fn construct_colour_refs(
         1 => {
             top[..9].copy_from_slice(&top_bank[4..13]);
             left[0] = top[0];
-            vertical(4, true, left)
+            edge_reader.vertical(4, true, left)
         }
         2 => {
             left[..9].copy_from_slice(&left_bank[4..13]);
             top[0] = left[0];
-            above(8, false, top)
+            edge_reader.above(8, false, top)
         }
         3 if component_x != 0 && component_y != 0 => {
             left[0] = workspace[origin - 17];
             top[0] = left[0];
-            vertical(4, true, left) && above(4, false, top)
+            edge_reader.vertical(4, true, left) && edge_reader.above(4, false, top)
         }
         4 => {
             top[..9].copy_from_slice(&top_bank[8..17]);
             left[0] = top[0];
-            vertical(8, false, left)
+            edge_reader.vertical(8, false, left)
         }
         5 => {
             top[..9].copy_from_slice(&top_bank[12..21]);
             left[0] = top[0];
-            vertical(4, true, left)
+            edge_reader.vertical(4, true, left)
         }
         6 | 9 | 14 if component_x != 0 && component_y != 0 => {
             left[0] = workspace[origin - 17];
             top[0] = left[0];
-            vertical(4, true, left) && above(8, false, top)
+            edge_reader.vertical(4, true, left) && edge_reader.above(8, false, top)
         }
         7 | 11 | 13 | 15 if component_x != 0 && component_y != 0 => {
             left[0] = workspace[origin - 17];
             top[0] = left[0];
-            vertical(4, true, left) && above(4, true, top)
+            edge_reader.vertical(4, true, left) && edge_reader.above(4, true, top)
         }
         8 => {
             left[..9].copy_from_slice(&left_bank[8..17]);
             top[0] = left[0];
-            above(8, false, top)
+            edge_reader.above(8, false, top)
         }
         10 => {
             left[..9].copy_from_slice(&left_bank[12..21]);
             top[0] = left[0];
-            above(8, false, top)
+            edge_reader.above(8, false, top)
         }
         12 if component_x != 0 && component_y != 0 => {
             left[0] = workspace[origin - 17];
             top[0] = left[0];
-            vertical(8, false, left) && above(8, false, top)
+            edge_reader.vertical(8, false, left) && edge_reader.above(8, false, top)
         }
         _ => false,
     };
@@ -532,6 +518,18 @@ fn construct_colour_refs(
         Ok(())
     } else {
         Err(invalid("colour reference is unavailable for constructor"))
+    }
+}
+
+fn predict_edge(mode: u8, width: usize, left: &[i16; 33], top: &[i16; 33], out: &mut [i16; 256]) {
+    for row in 0..width {
+        for col in 0..width {
+            out[row * width + col] = if mode == 0 {
+                top[col + 1]
+            } else {
+                left[row + 1]
+            };
+        }
     }
 }
 
@@ -547,20 +545,8 @@ fn predict(
             source: Box::new(e),
         })
     };
-    if mode == 0 {
-        for row in 0..width {
-            for col in 0..width {
-                out[row * width + col] = top[col + 1];
-            }
-        }
-        return Ok(());
-    }
-    if mode == 1 {
-        for row in 0..width {
-            for col in 0..width {
-                out[row * width + col] = left[row + 1];
-            }
-        }
+    if mode <= 1 {
+        predict_edge(mode, width, left, top, out);
         return Ok(());
     }
     if mode == 2 {

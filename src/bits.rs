@@ -2,7 +2,7 @@ use bitstream_io::{BigEndian, BitRead, BitReader as IoBitReader};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub(crate) enum BitError {
+pub enum BitError {
     #[error("requested bit range exceeds the input")]
     EndOfInput,
     #[error("bit count must be between 1 and 32")]
@@ -10,7 +10,7 @@ pub(crate) enum BitError {
 }
 
 /// A checked, MSB-first reader for ordinary bounded syntax.
-pub(crate) struct BitReader<'a> {
+pub struct BitReader<'a> {
     input: &'a [u8],
     inner: IoBitReader<&'a [u8], BigEndian>,
     bit_position: usize,
@@ -80,7 +80,7 @@ impl<'a> BitReader<'a> {
 /// Context reader that matches the format's 32-bit accumulator refill rules.
 /// Lookahead may inspect a bounded following byte through `peek_next_byte`.
 #[derive(Debug, Clone)]
-pub(crate) struct ContextBitReader<'a> {
+pub struct ContextBitReader<'a> {
     pub(crate) data: &'a [u8],
     pub(crate) size: usize,
     pub(crate) byte_offset: usize,

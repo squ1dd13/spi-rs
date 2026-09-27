@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Picture-wide alpha history. The planes include 32 pixels of horizontal padding.
-pub(crate) struct AlphaState {
+pub struct AlphaState {
     block_width: usize,
     total_block_rows: usize,
     stride: usize,
@@ -98,7 +98,7 @@ impl AlphaState {
 }
 
 #[derive(Debug)]
-pub(crate) struct AlphaSlice {
+pub struct AlphaSlice {
     pub(crate) plane: Vec<u8>,
     pub(crate) stride: usize,
     pub(crate) end_bit: usize,
@@ -273,47 +273,104 @@ fn transition(code: u16, top: &mut [u8; 33], left: &mut [u8; 33]) {
     }
 }
 
-fn construct_refs(
-    width: usize,
-    selector: usize,
-    left_bank: &[u8; 33],
-    top_bank: &[u8; 33],
-    plane: &[u8],
+struct AlphaEdgeReader<'a> {
+    plane: &'a [u8],
     stride: usize,
+    origin: usize,
     x: usize,
     y: usize,
-    mut left: &mut [u8; 33],
-    mut top: &mut [u8; 33],
-) -> Result<(), DecodeError> {
-    let origin = y
-        .checked_mul(stride)
-        .and_then(|v| v.checked_add(x))
-        .ok_or_else(|| invalid("reference offset overflow"))?;
-    let vertical = |out: &mut [u8; 33], count: usize, extend: bool| -> Result<(), DecodeError> {
-        if x == 0 {
+    width: usize,
+}
+
+impl AlphaEdgeReader<'_> {
+    fn vertical(&self, out: &mut [u8; 33], count: usize, extend: bool) -> Result<(), DecodeError> {
+        if self.x == 0 {
             return Err(invalid("missing left reference"));
         }
         for i in 0..count {
-            out[i + 1] = *plane
-                .get(origin - 1 + i * stride)
+            out[i + 1] = *self
+                .plane
+                .get(self.origin - 1 + i * self.stride)
                 .ok_or_else(|| invalid("left reference outside slice"))?;
         }
         if extend {
             let edge = out[count];
-            out[count + 1..2 * width + 1].fill(edge);
+            out[count + 1..2 * self.width + 1].fill(edge);
         }
         Ok(())
-    };
-    let above = |out: &mut [u8; 33], count: usize, extend: bool| -> Result<(), DecodeError> {
-        if y == 0 || x + count > stride {
+    }
+
+    fn above(&self, out: &mut [u8; 33], count: usize, extend: bool) -> Result<(), DecodeError> {
+        if self.y == 0 || self.x + count > self.stride {
             return Err(invalid("missing top reference"));
         }
-        out[1..count + 1].copy_from_slice(&plane[origin - stride..origin - stride + count]);
+        out[1..count + 1].copy_from_slice(
+            &self.plane[self.origin - self.stride..self.origin - self.stride + count],
+        );
         if extend {
             let edge = out[count];
-            out[count + 1..2 * width + 1].fill(edge);
+            out[count + 1..2 * self.width + 1].fill(edge);
         }
         Ok(())
+    }
+    fn construct_eight(
+        &self,
+        selector: usize,
+        left_bank: &[u8; 33],
+        top_bank: &[u8; 33],
+        left: &mut [u8; 33],
+        top: &mut [u8; 33],
+    ) -> Result<(), DecodeError> {
+        match selector {
+            0 => {
+                *left = *left_bank;
+                *top = *top_bank;
+            }
+            1 => {
+                top[..17].copy_from_slice(&top_bank[8..25]);
+                left[0] = top[0];
+                self.vertical(left, 8, true)?;
+            }
+            2 => {
+                left[..17].copy_from_slice(&left_bank[8..25]);
+                top[0] = left[0];
+                self.above(top, 16, false)?;
+            }
+            3 => {
+                left[0] = self.plane[self.origin - self.stride - 1];
+                top[0] = left[0];
+                self.vertical(left, 8, true)?;
+                self.above(top, 8, true)?;
+            }
+            _ => return Err(invalid("invalid width-eight reference selector")),
+        }
+        Ok(())
+    }
+}
+
+fn construct_refs(
+    width: usize,
+    selector: usize,
+    banks: (&[u8; 33], &[u8; 33]),
+    plane: &[u8],
+    stride: usize,
+    position: (usize, usize),
+    edges: (&mut [u8; 33], &mut [u8; 33]),
+) -> Result<(), DecodeError> {
+    let (left_bank, top_bank) = banks;
+    let (x, y) = position;
+    let (left, top) = edges;
+    let origin = y
+        .checked_mul(stride)
+        .and_then(|v| v.checked_add(x))
+        .ok_or_else(|| invalid("reference offset overflow"))?;
+    let reader = AlphaEdgeReader {
+        plane,
+        stride,
+        origin,
+        x,
+        y,
+        width,
     };
     match width {
         4 => match selector {
@@ -324,82 +381,60 @@ fn construct_refs(
             1 => {
                 top[..9].copy_from_slice(&top_bank[4..13]);
                 left[0] = top[0];
-                vertical(left, 4, true)?;
+                reader.vertical(left, 4, true)?;
             }
             2 => {
                 left[..9].copy_from_slice(&left_bank[4..13]);
                 top[0] = left[0];
-                above(top, 8, false)?;
+                reader.above(top, 8, false)?;
             }
             3 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(left, 4, true)?;
-                above(top, 4, false)?;
+                reader.vertical(left, 4, true)?;
+                reader.above(top, 4, false)?;
             }
             4 => {
                 top[..9].copy_from_slice(&top_bank[8..17]);
                 left[0] = top[0];
-                vertical(left, 8, false)?;
+                reader.vertical(left, 8, false)?;
             }
             5 => {
                 top[..9].copy_from_slice(&top_bank[12..21]);
                 left[0] = top[0];
-                vertical(left, 4, true)?;
+                reader.vertical(left, 4, true)?;
             }
             6 | 9 | 14 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(left, 4, true)?;
-                above(top, 8, false)?;
+                reader.vertical(left, 4, true)?;
+                reader.above(top, 8, false)?;
             }
             7 | 11 | 13 | 15 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(left, 4, true)?;
-                above(top, 4, true)?;
+                reader.vertical(left, 4, true)?;
+                reader.above(top, 4, true)?;
             }
             8 => {
                 left[..9].copy_from_slice(&left_bank[8..17]);
                 top[0] = left[0];
-                above(top, 8, false)?;
+                reader.above(top, 8, false)?;
             }
             10 => {
                 left[..9].copy_from_slice(&left_bank[12..21]);
                 top[0] = left[0];
-                above(top, 8, false)?;
+                reader.above(top, 8, false)?;
             }
             12 => {
                 left[0] = plane[origin - stride - 1];
                 top[0] = left[0];
-                vertical(left, 8, false)?;
-                above(top, 8, false)?;
+                reader.vertical(left, 8, false)?;
+                reader.above(top, 8, false)?;
             }
             _ => return Err(invalid("invalid width-four reference selector")),
         },
-        8 => match selector {
-            0 => {
-                *left = *left_bank;
-                *top = *top_bank;
-            }
-            1 => {
-                top[..17].copy_from_slice(&top_bank[8..25]);
-                left[0] = top[0];
-                vertical(left, 8, true)?;
-            }
-            2 => {
-                left[..17].copy_from_slice(&left_bank[8..25]);
-                top[0] = left[0];
-                above(top, 16, false)?;
-            }
-            3 => {
-                left[0] = plane[origin - stride - 1];
-                top[0] = left[0];
-                vertical(left, 8, true)?;
-                above(top, 8, true)?;
-            }
-            _ => return Err(invalid("invalid width-eight reference selector")),
-        },
+        8 => reader.construct_eight(selector, left_bank, top_bank, left, top)?,
         16 => {
             *left = *left_bank;
             *top = *top_bank;
@@ -409,45 +444,92 @@ fn construct_refs(
     Ok(())
 }
 
-fn predict(
-    left_u8: &[u8; 33],
-    top_u8: &[u8; 33],
+fn alpha_signed_four(
+    l: &[i16; 33],
+    t: &[i16; 33],
+    width: usize,
+    signed: &mut [i16; 256],
+) -> Result<(), DecodeError> {
+    let mut main = [0_i16; 65];
+    main[32..65].copy_from_slice(t);
+    let mut sum = 128;
+    let last = if width == 4 {
+        -2
+    } else if width == 8 {
+        -3
+    } else {
+        -6
+    };
+    for i in (last as isize..=-1_isize).rev() {
+        sum += 630;
+        main[usize::try_from(32_isize + i).expect("angular index is nonnegative")] =
+            l[usize::try_from(sum >> 8).expect("angular index is nonnegative")];
+    }
+    for r in 0..width {
+        let d = -((i32::try_from(r).expect("block width is at most 16") + 1) * 13);
+        let integer = d >> 5;
+        let frac = d & 31;
+        for c in 0..width {
+            let i = usize::try_from(
+                32 + i32::try_from(c).expect("block width is at most 16") + integer + 1,
+            )
+            .expect("angular index is nonnegative");
+            signed[r * width + c] = i16::try_from(
+                ((32 - frac) * i32::from(main[i]) + frac * i32::from(main[i + 1]) + 16) >> 5,
+            )
+            .expect("interpolated byte fits in i16");
+        }
+    }
+    Ok(())
+}
+
+fn alpha_signed_seven(
+    l: &[i16; 33],
+    t: &[i16; 33],
+    width: usize,
+    signed: &mut [i16; 256],
+) -> Result<(), DecodeError> {
+    if width == 4 {
+        let mut main = [0_i16; 34];
+        main[16..33].copy_from_slice(&l[..17]);
+        for i in (-16_isize..=-1_isize).rev() {
+            let side =
+                usize::try_from((-i * 630 + 128) >> 8).expect("angular side index is nonnegative");
+            main[usize::try_from(16_isize + i).expect("angular index is nonnegative")] =
+                t[side.min(16) + 1];
+        }
+        for r in 0..4 {
+            for c in 0..4 {
+                let d = -((i32::try_from(c).expect("column is below four") + 1) * 13);
+                let integer = -((-d + 31) / 32);
+                let frac = d - integer * 32;
+                let idx = usize::try_from(
+                    16 + i32::try_from(r).expect("row is below four") + integer + 1,
+                )
+                .expect("angular index is nonnegative");
+                signed[r * 4 + c] = i16::try_from(
+                    ((32 - frac) * i32::from(main[idx]) + frac * i32::from(main[idx + 1]) + 16)
+                        >> 5,
+                )
+                .expect("interpolated byte fits in i16");
+            }
+        }
+    } else {
+        predict_signed_angular(l, t, width, 11, &mut signed[..width * width])
+            .map_err(|_| invalid("left angular prediction failed"))?;
+    }
+    Ok(())
+}
+
+fn predict_signed_mode(
+    left: &[i16; 33],
+    top: &[i16; 33],
+    l: &[i16; 33],
+    t: &[i16; 33],
     width: usize,
     mode: u8,
-    out: &mut [u8; 256],
+    signed: &mut [i16; 256],
 ) -> Result<(), DecodeError> {
-    if width == 4 && ((mode <= 8 && mode != 3) || mode == 17) {
-        let mut references = PredictionReferences::default();
-        references.top_left = if mode == 4 { top_u8[0] } else { left_u8[0] };
-        references.left[..8].copy_from_slice(&left_u8[1..9]);
-        references.top[..8].copy_from_slice(&top_u8[1..9]);
-        let last_left = references.left[7];
-        let last_top = references.top[7];
-        references.left[8..].fill(last_left);
-        references.top[8..].fill(last_top);
-        predict_alpha(&references, width, mode, &mut out[..width * width], false)
-            .map_err(|_| invalid("width-four alpha prediction failed"))?;
-        return Ok(());
-    }
-    let mut left = [0_i16; 33];
-    let mut top = [0_i16; 33];
-    for i in 0..=2 * width {
-        left[i] = i16::from(left_u8[i]);
-        top[i] = i16::from(top_u8[i]);
-    }
-    let mut fl = [0_i16; 33];
-    let mut ft = [0_i16; 33];
-    let filtered = mode != 17
-        && ((width == 4 && matches!(mode, 3 | 6 | 9))
-            || (width == 8 && (3..=8).contains(&mode))
-            || (width == 16 && (3..=16).contains(&mode)));
-    if filtered {
-        filter_signed_references(&left, &top, width, &mut fl, &mut ft)
-            .map_err(|_| invalid("reference filtering failed"))?;
-    }
-    let l = if filtered { &fl } else { &left };
-    let t = if filtered { &ft } else { &top };
-    let mut signed = [0_i16; 256];
     match mode {
         0 | 1 => {
             for r in 0..width {
@@ -456,7 +538,7 @@ fn predict(
                 }
             }
         }
-        2 => predict_signed_dc(&left, &top, width, &mut signed[..width * width])
+        2 => predict_signed_dc(left, top, width, &mut signed[..width * width])
             .map_err(|_| invalid("DC prediction failed"))?,
         3 => {
             for r in 0..width {
@@ -465,41 +547,7 @@ fn predict(
                 }
             }
         }
-        4 => {
-            let mut main = [0_i16; 65];
-            for i in 0..33 {
-                main[32 + i] = t[i];
-            }
-            let mut sum = 128;
-            let last = if width == 4 {
-                -2
-            } else if width == 8 {
-                -3
-            } else {
-                -6
-            };
-            for i in (last as isize..=-1_isize).rev() {
-                sum += 630;
-                main[usize::try_from(32_isize + i).expect("angular index is nonnegative")] =
-                    l[usize::try_from(sum >> 8).expect("angular index is nonnegative")];
-            }
-            for r in 0..width {
-                let d = -((i32::try_from(r).expect("block width is at most 16") + 1) * 13);
-                let integer = d >> 5;
-                let frac = d & 31;
-                for c in 0..width {
-                    let i = usize::try_from(
-                        32 + i32::try_from(c).expect("block width is at most 16") + integer + 1,
-                    )
-                    .expect("angular index is nonnegative");
-                    signed[r * width + c] = i16::try_from(
-                        ((32 - frac) * i32::from(main[i]) + frac * i32::from(main[i + 1]) + 16)
-                            >> 5,
-                    )
-                    .expect("interpolated byte fits in i16");
-                }
-            }
-        }
+        4 => alpha_signed_four(l, t, width, signed)?,
         5 => {
             for r in 0..width {
                 let d = (r + 1) * 13;
@@ -530,41 +578,7 @@ fn predict(
                 }
             }
         }
-        7 => {
-            if width == 4 {
-                let mut main = [0_i16; 34];
-                for i in 0..17 {
-                    main[16 + i] = l[i];
-                }
-                for i in (-16_isize..=-1_isize).rev() {
-                    let side = usize::try_from((-i * 630 + 128) >> 8)
-                        .expect("angular side index is nonnegative");
-                    main[usize::try_from(16_isize + i).expect("angular index is nonnegative")] =
-                        t[side.min(16) + 1];
-                }
-                for r in 0..4 {
-                    for c in 0..4 {
-                        let d = -((i32::try_from(c).expect("column is below four") + 1) * 13);
-                        let integer = -((-d + 31) / 32);
-                        let frac = d - integer * 32;
-                        let idx = usize::try_from(
-                            16 + i32::try_from(r).expect("row is below four") + integer + 1,
-                        )
-                        .expect("angular index is nonnegative");
-                        signed[r * 4 + c] = i16::try_from(
-                            ((32 - frac) * i32::from(main[idx])
-                                + frac * i32::from(main[idx + 1])
-                                + 16)
-                                >> 5,
-                        )
-                        .expect("interpolated byte fits in i16");
-                    }
-                }
-            } else {
-                predict_signed_angular(l, t, width, 11, &mut signed[..width * width])
-                    .map_err(|_| invalid("left angular prediction failed"))?;
-            }
-        }
+        7 => alpha_signed_seven(l, t, width, signed)?,
         8 => {
             for r in 0..width {
                 for c in 0..width {
@@ -586,15 +600,58 @@ fn predict(
         }
         17 => {
             let mut refs = SignedReferences::default();
-            for i in 0..32 {
-                refs.left[i] = left[i + 1];
-                refs.top[i] = top[i + 1];
-            }
+            refs.left[..32].copy_from_slice(&left[1..33]);
+            refs.top[..32].copy_from_slice(&top[1..33]);
             predict_signed_planar(&refs, width, &mut signed[..width * width])
                 .map_err(|_| invalid("planar prediction failed"))?;
         }
         _ => return Err(invalid("unsupported prediction mode")),
     }
+    Ok(())
+}
+
+fn predict(
+    left_u8: &[u8; 33],
+    top_u8: &[u8; 33],
+    width: usize,
+    mode: u8,
+    out: &mut [u8; 256],
+) -> Result<(), DecodeError> {
+    if width == 4 && ((mode <= 8 && mode != 3) || mode == 17) {
+        let mut references = PredictionReferences {
+            top_left: if mode == 4 { top_u8[0] } else { left_u8[0] },
+            ..Default::default()
+        };
+        references.left[..8].copy_from_slice(&left_u8[1..9]);
+        references.top[..8].copy_from_slice(&top_u8[1..9]);
+        let last_left = references.left[7];
+        let last_top = references.top[7];
+        references.left[8..].fill(last_left);
+        references.top[8..].fill(last_top);
+        predict_alpha(&references, width, mode, &mut out[..width * width], false)
+            .map_err(|_| invalid("width-four alpha prediction failed"))?;
+        return Ok(());
+    }
+    let mut left = [0_i16; 33];
+    let mut top = [0_i16; 33];
+    for i in 0..=2 * width {
+        left[i] = i16::from(left_u8[i]);
+        top[i] = i16::from(top_u8[i]);
+    }
+    let mut fl = [0_i16; 33];
+    let mut ft = [0_i16; 33];
+    let filtered = mode != 17
+        && ((width == 4 && matches!(mode, 3 | 6 | 9))
+            || (width == 8 && (3..=8).contains(&mode))
+            || (width == 16 && (3..=16).contains(&mode)));
+    if filtered {
+        filter_signed_references(&left, &top, width, &mut fl, &mut ft)
+            .map_err(|_| invalid("reference filtering failed"))?;
+    }
+    let l = if filtered { &fl } else { &left };
+    let t = if filtered { &ft } else { &top };
+    let mut signed = [0_i16; 256];
+    predict_signed_mode(&left, &top, l, t, width, mode, &mut signed)?;
     for i in 0..width * width {
         out[i] = u8::try_from(signed[i].clamp(0, 255)).expect("clamped sample fits in u8");
     }
@@ -636,7 +693,367 @@ fn apply_component(
     }
 }
 
-pub(crate) fn decode_slice(
+struct AlphaBlockContext<'a, 'b> {
+    record: &'a Record<'b>,
+    geometry: SliceGeometry,
+    state: &'a mut AlphaState,
+    reader: &'a mut ContextBitReader<'b>,
+    history: &'a mut CoefficientHistory,
+    plane: &'a mut [u8],
+    stride: usize,
+}
+
+#[derive(Clone, Copy)]
+struct AlphaBlockPosition {
+    block: usize,
+    bit: usize,
+    block_x: usize,
+    block_y: usize,
+    dst_x: usize,
+    local_y: usize,
+    global_y: usize,
+}
+
+fn decode_alpha_predictive(
+    record: &Record<'_>,
+    state: &mut AlphaState,
+    reader: &mut ContextBitReader<'_>,
+    history: &mut CoefficientHistory,
+    plane: &mut [u8],
+    stride: usize,
+    position: AlphaBlockPosition,
+) -> Result<(), DecodeError> {
+    let AlphaBlockPosition {
+        block,
+        bit,
+        block_x,
+        dst_x,
+        local_y,
+        ..
+    } = position;
+
+    if reader.read_value(1) != Some(1) {
+        return Err(at(
+            invalid("predictive transform callback is not initialised"),
+            record,
+            block,
+            bit,
+        ));
+    }
+    for argument in 0..4_u32 {
+        let component = decode_contextual_component(
+            reader,
+            history,
+            ComponentRequest {
+                argument,
+                horizontal_offset: {
+                    let bytes = (block_x * 16).to_le_bytes();
+                    u16::from_le_bytes([bytes[0], bytes[1]])
+                },
+                maximum_width: 8,
+                fixed_width: 0,
+                colour_long_symbols: false,
+                width_selector_already_read: false,
+            },
+        )
+        .map_err(|error| {
+            DecodeError::Coefficients(CoefficientError::Syntax(Box::new(error))).at(ErrorContext {
+                record: Some(usize::from(record.index)),
+                block: Some(block),
+                component: Some(argument as usize),
+                bit_position: Some(reader.logical_bit()),
+            })
+        })?;
+        let width = usize::from(component.width);
+        // Constructors may write only part of each side. Their
+        // remaining samples persist across slots in one argument.
+        let mut left = [0_u8; 33];
+        let mut top = [0_u8; 33];
+        for slot in 0..component.count {
+            let base_x =
+                dst_x + (argument as usize & 1) * 8 + if width == 4 { (slot & 1) * 4 } else { 0 };
+            let base_y = local_y
+                + (argument as usize >> 1) * 8
+                + if width == 4 { (slot >> 1) * 4 } else { 0 };
+            let selector = if width == 4 {
+                argument as usize * 4 + slot
+            } else {
+                argument as usize
+            };
+            construct_refs(
+                width,
+                selector,
+                (&state.left_bank, &state.top_bank),
+                plane,
+                stride,
+                (base_x, base_y),
+                (&mut left, &mut top),
+            )
+            .map_err(|e| at(e, record, block, reader.logical_bit()))?;
+            let mut pred = [0_u8; 256];
+            predict(&left, &top, width, component.modes[slot], &mut pred)
+                .map_err(|e| at(e, record, block, reader.logical_bit()))?;
+            let mut reconstructed = [0_u8; 256];
+            apply_component(
+                width,
+                component.modes[slot],
+                component.callbacks[slot],
+                &component.values[slot],
+                &pred,
+                &mut reconstructed,
+            );
+            for r in 0..width {
+                let out = (base_y + r) * stride + base_x;
+                plane[out..out + width]
+                    .copy_from_slice(&reconstructed[r * width..r * width + width]);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prepare_alpha_banks(
+    state: &mut AlphaState,
+    geometry: SliceGeometry,
+    block_x: usize,
+    block_y: usize,
+    absolute_row: usize,
+    previous: &[u8],
+    current: &[u8],
+) {
+    if block_y != 0 {
+        state.top_bank = state.next_row_top_banks[block_x];
+    } else if block_x != 0 {
+        state.top_bank.fill(state.saved_block_edge[block_x - 1]);
+    } else {
+        state.top_bank.fill(128);
+    }
+    let top_available = absolute_row != 0 && previous[block_x] != 0;
+    let left_available = block_x != 0 && current[block_x - 1] != 0;
+    if block_y != 0 {
+        let code = u16::from(block_x > 0 && previous[block_x - 1] != 0) << 12
+            | u16::from(block_x + 1 < geometry.block_width && previous[block_x + 1] != 0) << 8
+            | u16::from(top_available) << 4
+            | u16::from(left_available);
+        transition(code, &mut state.top_bank, &mut state.left_bank);
+    } else if block_x == 0 {
+        state.left_bank.fill(128);
+    }
+}
+
+fn finish_alpha_block(
+    state: &mut AlphaState,
+    plane: &[u8],
+    stride: usize,
+    position: AlphaBlockPosition,
+    current: &mut [u8],
+) {
+    let AlphaBlockPosition {
+        block_x,
+        block_y,
+        dst_x,
+        local_y,
+        global_y,
+        ..
+    } = position;
+    for row in 0..16 {
+        let src = (local_y + row) * stride + dst_x;
+        let dest = (global_y + row) * stride + dst_x;
+        state.current_picture_plane[dest..dest + 16].copy_from_slice(&plane[src..src + 16]);
+    }
+    current[block_x] = 1;
+    state.saved_block_edge[block_x] = plane[local_y * stride + dst_x + 15];
+    state.left_bank[0] = if block_y == 0 {
+        128
+    } else {
+        state.top_bank[16]
+    };
+    for i in 0..16 {
+        state.left_bank[i + 1] = plane[(local_y + i) * stride + dst_x + 15];
+        state.current_row_bottom[dst_x + i] = plane[(local_y + 15) * stride + dst_x + i];
+    }
+    let left_edge = state.left_bank[16];
+    state.left_bank[17..].fill(left_edge);
+}
+
+fn decode_alpha_motion(
+    record: &Record<'_>,
+    state: &mut AlphaState,
+    reader: &mut ContextBitReader<'_>,
+    plane: &mut [u8],
+    stride: usize,
+    position: AlphaBlockPosition,
+    method: u8,
+) -> Result<(), DecodeError> {
+    let AlphaBlockPosition {
+        block,
+        bit,
+        block_x,
+        dst_x,
+        local_y,
+        global_y,
+        ..
+    } = position;
+
+    let motion = if method == 0 {
+        if block_x == 0 {
+            Motion { x: 0, y: 16 }
+        } else {
+            Motion { x: 16, y: 0 }
+        }
+    } else {
+        read_motion(reader).map_err(|e| at(e, record, block, bit))?
+    };
+    copy_alpha_motion(
+        &mut state.current_picture_plane,
+        stride,
+        state.total_block_rows * 16,
+        dst_x,
+        global_y,
+        motion,
+    )
+    .map_err(|_| {
+        at(
+            invalid("motion source outside padded picture"),
+            record,
+            block,
+            bit,
+        )
+    })?;
+    copy_block16(
+        &state.current_picture_plane,
+        stride,
+        (dst_x, global_y),
+        plane,
+        stride,
+        (dst_x, local_y),
+    )
+    .map_err(|_| at(invalid("alpha block copy failed"), record, block, bit))?;
+    Ok(())
+}
+
+fn decode_raw_alpha_block(
+    record: &Record<'_>,
+    reader: &mut ContextBitReader<'_>,
+    plane: &mut [u8],
+    stride: usize,
+    position: AlphaBlockPosition,
+) -> Result<(), DecodeError> {
+    let AlphaBlockPosition {
+        block,
+        dst_x,
+        local_y,
+        ..
+    } = position;
+
+    let raw_bit = (reader.logical_bit() + 7) & !7;
+    let offset = raw_bit / 8;
+    let end = offset
+        .checked_add(256)
+        .filter(|&v| v <= record.data.len())
+        .ok_or_else(|| at(invalid("truncated raw alpha block"), record, block, raw_bit))?;
+    for row in 0..16 {
+        let out = (local_y + row) * stride + dst_x;
+        plane[out..out + 16]
+            .copy_from_slice(&record.data[offset + row * 16..offset + row * 16 + 16]);
+    }
+    reader.byte_offset = end;
+    reader.accumulator = 0;
+    reader.available = 0;
+    Ok(())
+}
+
+fn decode_alpha_block(
+    context: AlphaBlockContext<'_, '_>,
+    block_x: usize,
+    block_y: usize,
+    absolute_row: usize,
+    previous: &[u8],
+    current: &mut [u8],
+) -> Result<(), DecodeError> {
+    let AlphaBlockContext {
+        record,
+        geometry,
+        state,
+        reader,
+        history,
+        plane,
+        stride,
+    } = context;
+    let block = block_y * geometry.block_width + block_x;
+    let bit = reader.logical_bit();
+    prepare_alpha_banks(
+        state,
+        geometry,
+        block_x,
+        block_y,
+        absolute_row,
+        previous,
+        current,
+    );
+    let method = read_method(reader).map_err(|e| at(e, record, block, bit))?;
+    if matches!(method, 2 | 4) {
+        return Err(at(
+            DecodeError::Syntax(SyntaxError::UnsupportedMethod {
+                stream: "alpha",
+                method,
+            }),
+            record,
+            block,
+            bit,
+        ));
+    }
+    let dst_x = block_x * 16;
+    let local_y = block_y * 16;
+    let global_y = absolute_row * 16;
+    let position = AlphaBlockPosition {
+        block,
+        bit,
+        block_x,
+        block_y,
+        dst_x,
+        local_y,
+        global_y,
+    };
+    match method {
+        0 | 1 => decode_alpha_motion(record, state, reader, plane, stride, position, method)?,
+        3 => decode_alpha_predictive(record, state, reader, history, plane, stride, position)?,
+        5 => decode_raw_alpha_block(record, reader, plane, stride, position)?,
+        _ => {
+            return Err(at(
+                invalid("unknown alpha coding method"),
+                record,
+                block,
+                bit,
+            ));
+        }
+    }
+    finish_alpha_block(state, plane, stride, position, current);
+    Ok(())
+}
+
+fn finish_alpha_row(state: &mut AlphaState, geometry: SliceGeometry, current: &[u8]) {
+    state.block_available.copy_from_slice(current);
+    for x in 0..geometry.block_width {
+        let origin = x * 16;
+        let bank = &mut state.next_row_top_banks[x];
+        bank[0] = if origin == 0 {
+            0
+        } else {
+            state.current_row_bottom[origin - 1]
+        };
+        for i in 0..32 {
+            let px = origin + i;
+            bank[i + 1] = if px < state.current_row_bottom.len() && px < geometry.picture_width {
+                state.current_row_bottom[px]
+            } else {
+                state.current_row_bottom[geometry.picture_width.saturating_sub(1)]
+            };
+        }
+    }
+}
+
+pub fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
     colour_end_bit: usize,
@@ -704,232 +1121,24 @@ pub(crate) fn decode_slice(
         previous.copy_from_slice(&state.block_available);
         current.fill(0);
         for block_x in 0..geometry.block_width {
-            let block = block_y * geometry.block_width + block_x;
-            let bit = reader.logical_bit();
-            if block_y != 0 {
-                state.top_bank = state.next_row_top_banks[block_x];
-            } else if block_x != 0 {
-                state.top_bank.fill(state.saved_block_edge[block_x - 1]);
-            } else {
-                state.top_bank.fill(128);
-            }
-            let top_available = absolute_row != 0 && previous[block_x] != 0;
-            let left_available = block_x != 0 && current[block_x - 1] != 0;
-            if block_y != 0 {
-                let code = u16::from(block_x > 0 && previous[block_x - 1] != 0) << 12
-                    | u16::from(block_x + 1 < geometry.block_width && previous[block_x + 1] != 0)
-                        << 8
-                    | u16::from(top_available) << 4
-                    | u16::from(left_available);
-                transition(code, &mut state.top_bank, &mut state.left_bank);
-            } else if block_x == 0 {
-                state.left_bank.fill(128);
-            }
-            let method = read_method(&mut reader).map_err(|e| at(e, record, block, bit))?;
-            if matches!(method, 2 | 4) {
-                return Err(at(
-                    DecodeError::Syntax(SyntaxError::UnsupportedMethod {
-                        stream: "alpha",
-                        method,
-                    }),
+            decode_alpha_block(
+                AlphaBlockContext {
                     record,
-                    block,
-                    bit,
-                ));
-            }
-            let dst_x = block_x * 16;
-            let local_y = block_y * 16;
-            let global_y = absolute_row * 16;
-            match method {
-                0 | 1 => {
-                    let motion = if method == 0 {
-                        if block_x == 0 {
-                            Motion { x: 0, y: 16 }
-                        } else {
-                            Motion { x: 16, y: 0 }
-                        }
-                    } else {
-                        read_motion(&mut reader).map_err(|e| at(e, record, block, bit))?
-                    };
-                    copy_alpha_motion(
-                        &mut state.current_picture_plane,
-                        stride,
-                        state.total_block_rows * 16,
-                        dst_x,
-                        global_y,
-                        motion,
-                    )
-                    .map_err(|_| {
-                        at(
-                            invalid("motion source outside padded picture"),
-                            record,
-                            block,
-                            bit,
-                        )
-                    })?;
-                    copy_block16(
-                        &state.current_picture_plane,
-                        stride,
-                        dst_x,
-                        global_y,
-                        &mut plane,
-                        stride,
-                        dst_x,
-                        local_y,
-                    )
-                    .map_err(|_| at(invalid("alpha block copy failed"), record, block, bit))?;
-                }
-                3 => {
-                    if reader.read_value(1) != Some(1) {
-                        return Err(at(
-                            invalid("predictive transform callback is not initialised"),
-                            record,
-                            block,
-                            bit,
-                        ));
-                    }
-                    for argument in 0..4_u32 {
-                        let component = decode_contextual_component(
-                            &mut reader,
-                            &mut history,
-                            ComponentRequest {
-                                argument,
-                                horizontal_offset: {
-                                    let bytes = (block_x * 16).to_le_bytes();
-                                    u16::from_le_bytes([bytes[0], bytes[1]])
-                                },
-                                maximum_width: 8,
-                                fixed_width: 0,
-                                colour_long_symbols: false,
-                                width_selector_already_read: false,
-                            },
-                        )
-                        .map_err(|error| {
-                            DecodeError::Coefficients(CoefficientError::Syntax(Box::new(error))).at(
-                                ErrorContext {
-                                    record: Some(usize::from(record.index)),
-                                    block: Some(block),
-                                    component: Some(argument as usize),
-                                    bit_position: Some(reader.logical_bit()),
-                                },
-                            )
-                        })?;
-                        let width = usize::from(component.width);
-                        // Constructors may write only part of each side. Their
-                        // remaining samples persist across slots in one argument.
-                        let mut left = [0_u8; 33];
-                        let mut top = [0_u8; 33];
-                        for slot in 0..component.count {
-                            let base_x = dst_x
-                                + (argument as usize & 1) * 8
-                                + if width == 4 { (slot & 1) * 4 } else { 0 };
-                            let base_y = local_y
-                                + (argument as usize >> 1) * 8
-                                + if width == 4 { (slot >> 1) * 4 } else { 0 };
-                            let selector = if width == 4 {
-                                argument as usize * 4 + slot
-                            } else {
-                                argument as usize
-                            };
-                            construct_refs(
-                                width,
-                                selector,
-                                &state.left_bank,
-                                &state.top_bank,
-                                &plane,
-                                stride,
-                                base_x,
-                                base_y,
-                                &mut left,
-                                &mut top,
-                            )
-                            .map_err(|e| at(e, record, block, reader.logical_bit()))?;
-                            let mut pred = [0_u8; 256];
-                            predict(&left, &top, width, component.modes[slot], &mut pred)
-                                .map_err(|e| at(e, record, block, reader.logical_bit()))?;
-                            let mut reconstructed = [0_u8; 256];
-                            apply_component(
-                                width,
-                                component.modes[slot],
-                                component.callbacks[slot],
-                                &component.values[slot],
-                                &pred,
-                                &mut reconstructed,
-                            );
-                            for r in 0..width {
-                                let out = (base_y + r) * stride + base_x;
-                                plane[out..out + width]
-                                    .copy_from_slice(&reconstructed[r * width..r * width + width]);
-                            }
-                        }
-                    }
-                }
-                5 => {
-                    let raw_bit = (reader.logical_bit() + 7) & !7;
-                    let offset = raw_bit / 8;
-                    let end = offset
-                        .checked_add(256)
-                        .filter(|&v| v <= record.data.len())
-                        .ok_or_else(|| {
-                            at(invalid("truncated raw alpha block"), record, block, raw_bit)
-                        })?;
-                    for row in 0..16 {
-                        let out = (local_y + row) * stride + dst_x;
-                        plane[out..out + 16].copy_from_slice(
-                            &record.data[offset + row * 16..offset + row * 16 + 16],
-                        );
-                    }
-                    reader.byte_offset = end;
-                    reader.accumulator = 0;
-                    reader.available = 0;
-                }
-                _ => {
-                    return Err(at(
-                        invalid("unknown alpha coding method"),
-                        record,
-                        block,
-                        bit,
-                    ));
-                }
-            }
-            for row in 0..16 {
-                let src = (local_y + row) * stride + dst_x;
-                let dest = (global_y + row) * stride + dst_x;
-                state.current_picture_plane[dest..dest + 16].copy_from_slice(&plane[src..src + 16]);
-            }
-            current[block_x] = 1;
-            state.saved_block_edge[block_x] = plane[local_y * stride + dst_x + 15];
-            state.left_bank[0] = if block_y == 0 {
-                128
-            } else {
-                state.top_bank[16]
-            };
-            for i in 0..16 {
-                state.left_bank[i + 1] = plane[(local_y + i) * stride + dst_x + 15];
-                state.current_row_bottom[dst_x + i] = plane[(local_y + 15) * stride + dst_x + i];
-            }
-            let left_edge = state.left_bank[16];
-            state.left_bank[17..].fill(left_edge);
+                    geometry,
+                    state,
+                    reader: &mut reader,
+                    history: &mut history,
+                    plane: &mut plane,
+                    stride,
+                },
+                block_x,
+                block_y,
+                absolute_row,
+                &previous,
+                &mut current,
+            )?;
         }
-        state.block_available.copy_from_slice(&current);
-        for x in 0..geometry.block_width {
-            let origin = x * 16;
-            let bank = &mut state.next_row_top_banks[x];
-            bank[0] = if origin == 0 {
-                0
-            } else {
-                state.current_row_bottom[origin - 1]
-            };
-            for i in 0..32 {
-                let px = origin + i;
-                bank[i + 1] = if px < state.current_row_bottom.len() && px < geometry.picture_width
-                {
-                    state.current_row_bottom[px]
-                } else {
-                    state.current_row_bottom[geometry.picture_width.saturating_sub(1)]
-                };
-            }
-        }
+        finish_alpha_row(state, geometry, &current);
     }
     Ok(AlphaSlice {
         plane,

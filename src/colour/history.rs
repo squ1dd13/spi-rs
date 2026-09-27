@@ -1,7 +1,7 @@
 use crate::{DecodeError, colour::allocation};
 
 /// Picture-wide padded planes and the boundary data used by predictive blocks.
-pub(crate) struct ColourState {
+pub struct ColourState {
     pub(crate) block_width: usize,
     pub(crate) total_block_rows: usize,
     pub(crate) stride: usize,

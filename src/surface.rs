@@ -16,50 +16,6 @@ fn required_len(stride: usize, height: usize) -> Result<usize, SurfaceError> {
         .ok_or(SurfaceError::InvalidDimensions)
 }
 
-/// A borrowed plane with an explicit visible width and row stride.
-pub struct Plane<'a> {
-    data: &'a [u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-}
-impl<'a> Plane<'a> {
-    pub fn new(
-        data: &'a [u8],
-        width: usize,
-        height: usize,
-        stride: usize,
-    ) -> Result<Self, SurfaceError> {
-        if width == 0 || height == 0 || stride < width {
-            return Err(SurfaceError::InvalidDimensions);
-        }
-        if data.len() < required_len(stride, height)? {
-            return Err(SurfaceError::BufferTooSmall);
-        }
-        Ok(Self {
-            data,
-            width,
-            height,
-            stride,
-        })
-    }
-    pub fn width(&self) -> usize {
-        self.width
-    }
-    pub fn height(&self) -> usize {
-        self.height
-    }
-    pub fn stride(&self) -> usize {
-        self.stride
-    }
-    pub fn get(&self, x: usize, y: usize) -> Result<u8, SurfaceError> {
-        if x >= self.width || y >= self.height {
-            return Err(SurfaceError::OutOfBounds);
-        }
-        Ok(self.data[y * self.stride + x])
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Motion {
     pub x: i32,
@@ -173,13 +129,13 @@ pub fn copy_alpha_motion(
 pub fn copy_block16(
     source: &[u8],
     source_stride: usize,
-    source_x: usize,
-    source_y: usize,
+    source_position: (usize, usize),
     destination: &mut [u8],
     destination_stride: usize,
-    destination_x: usize,
-    destination_y: usize,
+    destination_position: (usize, usize),
 ) -> Result<(), SurfaceError> {
+    let (source_x, source_y) = source_position;
+    let (destination_x, destination_y) = destination_position;
     if source_stride < 16 || destination_stride < 16 {
         return Err(SurfaceError::InvalidDimensions);
     }
@@ -250,8 +206,8 @@ mod tests {
     fn alpha_motion_can_read_across_visible_row_padding() {
         let (s, h) = (24, 20);
         let mut p = vec![0_u8; s * h];
-        for i in 0..p.len() {
-            p[i] = i.to_le_bytes()[0];
+        for (i, byte) in p.iter_mut().enumerate() {
+            *byte = i.to_le_bytes()[0];
         }
         let source: Vec<u8> = (0..16)
             .flat_map(|r| (16..32).map(move |c| (r * s + c).to_le_bytes()[0]))

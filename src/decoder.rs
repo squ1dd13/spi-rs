@@ -5,7 +5,7 @@ use crate::{DecodeError, DecodeLimits, ErrorContext, ImageInfo, error::ParseErro
 /// Geometry shared by one record's colour and alpha streams. Block coordinates
 /// use the padded 16-pixel grid; visible dimensions clip the last record.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SliceGeometry {
+pub struct SliceGeometry {
     pub block_width: usize,
     pub block_rows: usize,
     pub absolute_block_row: usize,
@@ -56,8 +56,7 @@ fn checked_add(
 /// block allowance covers reference banks, availability masks, and coefficient
 /// contexts in addition to the explicitly sized output and plane buffers.
 fn check_memory(
-    width: usize,
-    height: usize,
+    dimensions: (usize, usize),
     blocks_x: usize,
     blocks_y: usize,
     slice_rows: usize,
@@ -65,6 +64,7 @@ fn check_memory(
     selector: u8,
     limit: usize,
 ) -> Result<usize, DecodeError> {
+    let (width, height) = dimensions;
     let resource = "decoder memory";
     let output = checked_mul(
         checked_mul(width, height, resource, limit)?,
@@ -173,12 +173,12 @@ fn compose_rows(
             detail: "colour plane does not cover visible rows",
         });
     }
-    if let Some(alpha) = alpha {
-        if alpha.stride < width || alpha.plane.len() < alpha.stride * height {
-            return Err(DecodeError::Coverage {
-                detail: "alpha plane does not cover visible rows",
-            });
-        }
+    if let Some(alpha) = alpha
+        && (alpha.stride < width || alpha.plane.len() < alpha.stride * height)
+    {
+        return Err(DecodeError::Coverage {
+            detail: "alpha plane does not cover visible rows",
+        });
     }
     for row in 0..height {
         let output_row = (geometry.pixel_row() + row) * width * 4;
@@ -195,7 +195,165 @@ fn compose_rows(
     Ok(())
 }
 
-pub(crate) fn decode_with_limits(
+struct RecordDecodeContext<'a> {
+    output: &'a mut Vec<u8>,
+    colour_state: &'a mut crate::colour::ColourState,
+    alpha_state: &'a mut Option<crate::alpha::AlphaState>,
+    width: usize,
+    height: usize,
+    blocks_x: usize,
+    blocks_y: usize,
+    slice_rows: usize,
+    record_storage: usize,
+    memory_limit: usize,
+}
+
+impl RecordDecodeContext<'_> {
+    fn record_geometry(
+        &self,
+        record: &format::Record<'_>,
+        index: usize,
+        covered_rows: usize,
+    ) -> Result<SliceGeometry, DecodeError> {
+        if usize::from(record.index) != index {
+            return Err(DecodeError::Coverage {
+                detail: "record indices are not consecutive",
+            }
+            .at(ErrorContext {
+                record: Some(index),
+                ..ErrorContext::default()
+            }));
+        }
+        let origin = index
+            .checked_mul(self.slice_rows)
+            .ok_or(DecodeError::Coverage {
+                detail: "record origin overflows",
+            })?;
+        if origin >= self.blocks_y {
+            return Err(DecodeError::Coverage {
+                detail: "record origin exceeds the picture",
+            }
+            .at(ErrorContext {
+                record: Some(index),
+                ..ErrorContext::default()
+            }));
+        }
+        let geometry = SliceGeometry {
+            block_width: self.blocks_x,
+            block_rows: self.slice_rows.min(self.blocks_y - origin),
+            absolute_block_row: origin,
+            picture_width: self.width,
+            picture_height: self.height,
+        };
+        if geometry.pixel_row() != covered_rows {
+            return Err(DecodeError::Coverage {
+                detail: "slice rows have a gap",
+            });
+        }
+        Ok(geometry)
+    }
+
+    fn decode_records(&mut self, records: &[format::Record<'_>]) -> Result<(), DecodeError> {
+        let mut covered_rows = 0_usize;
+        for (index, record) in records.iter().enumerate() {
+            let geometry = self.record_geometry(record, index, covered_rows)?;
+            let colour = crate::colour::decode_slice(record, geometry, self.colour_state).map_err(
+                |error| {
+                    error.at(ErrorContext {
+                        record: Some(index),
+                        ..ErrorContext::default()
+                    })
+                },
+            )?;
+            log::debug!("record {index}: colour endpoint {} bits", colour.end_bit);
+            let aligned =
+                colour
+                    .end_bit
+                    .checked_add(7)
+                    .map(|v| v & !7)
+                    .ok_or(DecodeError::Coverage {
+                        detail: "colour bit position overflows",
+                    })?;
+            let record_bits = record
+                .data
+                .len()
+                .checked_mul(8)
+                .ok_or(DecodeError::Coverage {
+                    detail: "record bit length overflows",
+                })?;
+            if aligned > record_bits {
+                return Err(DecodeError::Coverage {
+                    detail: "colour stream exceeds its record",
+                });
+            }
+            let alpha = if let Some(state) = self.alpha_state.as_mut() {
+                Some(
+                    crate::alpha::decode_slice(record, geometry, colour.end_bit, state).map_err(
+                        |error| {
+                            error.at(ErrorContext {
+                                record: Some(index),
+                                ..ErrorContext::default()
+                            })
+                        },
+                    )?,
+                )
+            } else {
+                None
+            };
+            check_live_memory(
+                &[
+                    self.output.capacity(),
+                    self.record_storage,
+                    self.colour_state.heap_bytes(),
+                    self.alpha_state
+                        .as_ref()
+                        .map_or(0, crate::alpha::AlphaState::heap_bytes),
+                    colour.heap_bytes(),
+                    alpha
+                        .as_ref()
+                        .map_or(0, crate::alpha::AlphaSlice::heap_bytes),
+                ],
+                self.memory_limit,
+            )?;
+            let end_bit = alpha.as_ref().map_or(aligned, |stream| stream.end_bit);
+            log::debug!("record {index}: final endpoint {end_bit} bits");
+            if end_bit < aligned || end_bit > record_bits || record_bits - end_bit >= 8 {
+                return Err(DecodeError::Coverage {
+                    detail: "record stream has incomplete or extra syntax",
+                }
+                .at(ErrorContext {
+                    record: Some(index),
+                    bit_position: Some(end_bit),
+                    ..ErrorContext::default()
+                }));
+            }
+            compose_rows(self.output, self.width, geometry, &colour, alpha.as_ref())?;
+            covered_rows += geometry.visible_height();
+        }
+        if covered_rows != self.height {
+            return Err(DecodeError::Coverage {
+                detail: "picture rows are incomplete",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_decode_picture(picture: format::PictureInfo) -> Result<(), DecodeError> {
+    if picture.colour_mode != 0 {
+        return Err(DecodeError::UnsupportedColourMode {
+            value: picture.colour_mode,
+        });
+    }
+    if !matches!(picture.selector, 2 | 4 | 5) {
+        return Err(DecodeError::UnsupportedOutputFormat {
+            selector: picture.selector,
+        });
+    }
+    Ok(())
+}
+
+pub fn decode_with_limits(
     input: &[u8],
     limits: DecodeLimits,
 ) -> Result<image::RgbaImage, DecodeError> {
@@ -210,16 +368,7 @@ pub(crate) fn decode_with_limits(
         format::parse_container(input).map_err(|error| ParseError::Container(Box::new(error)))?;
     let picture = format::parse_picture(container.picture)
         .map_err(|error| ParseError::Picture(Box::new(error)))?;
-    if picture.colour_mode != 0 {
-        return Err(DecodeError::UnsupportedColourMode {
-            value: picture.colour_mode,
-        });
-    }
-    if !matches!(picture.selector, 2 | 4 | 5) {
-        return Err(DecodeError::UnsupportedOutputFormat {
-            selector: picture.selector,
-        });
-    }
+    validate_decode_picture(picture)?;
     let width = usize::from(picture.width);
     let height = usize::from(picture.height);
     let blocks_x = width.div_ceil(16);
@@ -246,8 +395,7 @@ pub(crate) fn decode_with_limits(
     }
     let slice_rows = blocks_y.div_ceil(records.len());
     let output_len = check_memory(
-        width,
-        height,
+        (width, height),
         blocks_x,
         blocks_y,
         slice_rows,
@@ -284,118 +432,19 @@ pub(crate) fn decode_with_limits(
         ],
         limits.max_memory_bytes,
     )?;
-    let mut covered_rows = 0_usize;
-    for (index, record) in records.iter().enumerate() {
-        if usize::from(record.index) != index {
-            return Err(DecodeError::Coverage {
-                detail: "record indices are not consecutive",
-            }
-            .at(ErrorContext {
-                record: Some(index),
-                ..ErrorContext::default()
-            }));
-        }
-        let origin = index.checked_mul(slice_rows).ok_or(DecodeError::Coverage {
-            detail: "record origin overflows",
-        })?;
-        if origin >= blocks_y {
-            return Err(DecodeError::Coverage {
-                detail: "record origin exceeds the picture",
-            }
-            .at(ErrorContext {
-                record: Some(index),
-                ..ErrorContext::default()
-            }));
-        }
-        let geometry = SliceGeometry {
-            block_width: blocks_x,
-            block_rows: slice_rows.min(blocks_y - origin),
-            absolute_block_row: origin,
-            picture_width: width,
-            picture_height: height,
-        };
-        if geometry.pixel_row() != covered_rows {
-            return Err(DecodeError::Coverage {
-                detail: "slice rows have a gap",
-            });
-        }
-        let colour =
-            crate::colour::decode_slice(record, geometry, &mut colour_state).map_err(|error| {
-                error.at(ErrorContext {
-                    record: Some(index),
-                    ..ErrorContext::default()
-                })
-            })?;
-        log::debug!("record {index}: colour endpoint {} bits", colour.end_bit);
-        let aligned =
-            colour
-                .end_bit
-                .checked_add(7)
-                .map(|v| v & !7)
-                .ok_or(DecodeError::Coverage {
-                    detail: "colour bit position overflows",
-                })?;
-        let record_bits = record
-            .data
-            .len()
-            .checked_mul(8)
-            .ok_or(DecodeError::Coverage {
-                detail: "record bit length overflows",
-            })?;
-        if aligned > record_bits {
-            return Err(DecodeError::Coverage {
-                detail: "colour stream exceeds its record",
-            });
-        }
-        let alpha = if let Some(state) = alpha_state.as_mut() {
-            Some(
-                crate::alpha::decode_slice(record, geometry, colour.end_bit, state).map_err(
-                    |error| {
-                        error.at(ErrorContext {
-                            record: Some(index),
-                            ..ErrorContext::default()
-                        })
-                    },
-                )?,
-            )
-        } else {
-            None
-        };
-        check_live_memory(
-            &[
-                output.capacity(),
-                record_storage,
-                colour_state.heap_bytes(),
-                alpha_state
-                    .as_ref()
-                    .map_or(0, crate::alpha::AlphaState::heap_bytes),
-                colour.heap_bytes(),
-                alpha
-                    .as_ref()
-                    .map_or(0, crate::alpha::AlphaSlice::heap_bytes),
-            ],
-            limits.max_memory_bytes,
-        )?;
-        let end_bit = alpha.as_ref().map_or(aligned, |stream| stream.end_bit);
-        log::debug!("record {index}: final endpoint {end_bit} bits");
-        if end_bit < aligned || end_bit > record_bits || record_bits - end_bit >= 8 {
-            return Err(DecodeError::Coverage {
-                detail: "record stream has incomplete or extra syntax",
-            }
-            .at(ErrorContext {
-                record: Some(index),
-                bit_position: Some(end_bit),
-                ..ErrorContext::default()
-            }));
-        }
-        compose_rows(&mut output, width, geometry, &colour, alpha.as_ref())?;
-        covered_rows += geometry.visible_height();
+    RecordDecodeContext {
+        output: &mut output,
+        colour_state: &mut colour_state,
+        alpha_state: &mut alpha_state,
+        width,
+        height,
+        blocks_x,
+        blocks_y,
+        slice_rows,
+        record_storage,
+        memory_limit: limits.max_memory_bytes,
     }
-    if covered_rows != height {
-        return Err(DecodeError::Coverage {
-            detail: "picture rows are incomplete",
-        });
-    }
+    .decode_records(&records)?;
     let info = ImageInfo {
         width: u32::from(picture.width),
         height: u32::from(picture.height),

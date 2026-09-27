@@ -11,10 +11,10 @@ use crate::{
     format::Record,
 };
 
-pub(crate) use history::ColourState;
+pub use history::ColourState;
 
 #[derive(Debug)]
-pub(crate) struct ColourSlice {
+pub struct ColourSlice {
     pub planes: [Vec<u8>; 3],
     pub stride: usize,
     pub end_bit: usize,
@@ -26,7 +26,7 @@ impl ColourSlice {
     }
 }
 
-pub(crate) fn decode_slice(
+pub fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
     state: &mut ColourState,

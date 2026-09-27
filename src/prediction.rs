@@ -7,6 +7,7 @@ pub enum PredictionError {
     #[error("unsupported prediction mode")]
     InvalidMode,
     #[error("prediction reference is out of bounds")]
+    #[cfg(test)]
     OutOfBounds,
     #[error("prediction output buffer is too small")]
     BufferTooSmall,
@@ -57,6 +58,7 @@ impl Default for PredictionReferences {
 }
 
 /// Build the top and left samples available at a block position.
+#[cfg(test)]
 pub fn build_prediction_references(
     plane: &[u8],
     stride: usize,
@@ -169,6 +171,152 @@ fn edge_filter(references: &PredictionReferences, top: bool, index: usize, width
 
 /// Predict alpha modes supported by the observed callback: top, left, DC,
 /// diagonal, angular families 4 through 8, and planar (17).
+fn alpha_dc(references: &PredictionReferences, width: usize, row: usize, col: usize) -> u8 {
+    let mut sum = u32::try_from(width).expect("validated width is at most 16");
+    for i in 0..width {
+        sum += u32::from(references.top[i]) + u32::from(references.left[i]);
+    }
+    let dc = sum / u32::try_from(2 * width).expect("validated width is at most 16");
+    if width != 4 {
+        byte_sample(dc)
+    } else if row == 0 && col == 0 {
+        byte_sample(
+            (3 * (u32::from(references.left[0]) + u32::from(references.top[0])) + 2 * dc + 4) >> 3,
+        )
+    } else if row == 0 {
+        byte_sample((3 * u32::from(references.top[col]) + 5 * dc + 4) >> 3)
+    } else if col == 0 {
+        byte_sample((3 * u32::from(references.left[row]) + 5 * dc + 4) >> 3)
+    } else {
+        byte_sample(dc)
+    }
+}
+
+fn alpha_angular_top(
+    references: &PredictionReferences,
+    width: usize,
+    row: usize,
+    col: usize,
+) -> u8 {
+    let mut main = [0_u8; 35];
+    let origin = 17;
+    main[origin] = references.top_left;
+    for i in 0..17 {
+        main[origin + i + 1] = references.top[i];
+    }
+    let mut sum = 128_i32;
+    for n in 1..=width {
+        sum += 630;
+        let idx = usize::try_from(sum >> 8).expect("angular index is nonnegative");
+        main[origin - n] = if idx == 0 {
+            references.top_left
+        } else {
+            references.left[idx - 1]
+        };
+    }
+    let d = -((block_coordinate(row) + 1) * 13);
+    let integer = d >> 5;
+    let frac = d & 31;
+    let i = block_coordinate(col) + integer + 1;
+    byte_sample_signed(
+        ((32 - frac) * i32::from(main[block_index(block_coordinate(origin) + i)])
+            + frac * i32::from(main[block_index(block_coordinate(origin) + i + 1)])
+            + 16)
+            >> 5,
+    )
+}
+
+fn alpha_angular_left(
+    references: &PredictionReferences,
+    width: usize,
+    row: usize,
+    col: usize,
+) -> u8 {
+    let corner = if width == 4 {
+        references.top_left
+    } else {
+        filter3(references.left[0], references.top_left, references.top[0])
+    };
+    let mut main = [0_u8; 35];
+    let origin = 17;
+    main[origin] = corner;
+    for i in 0..17 {
+        main[origin + i + 1] = edge_filter(references, false, i, width);
+    }
+    for n in 1_usize..=16 {
+        let idx = ((n * 630 + 128) >> 8).saturating_sub(1).min(16);
+        main[origin - n] = edge_filter(references, true, idx, width);
+    }
+    let d = -((block_coordinate(col) + 1) * 13);
+    let integer = if d < 0 { -((-d + 31) / 32) } else { d / 32 };
+    let frac = d - integer * 32;
+    let i = block_coordinate(row) + integer + 1;
+    byte_sample_signed(
+        ((32 - frac) * i32::from(main[block_index(block_coordinate(origin) + i)])
+            + frac * i32::from(main[block_index(block_coordinate(origin) + i + 1)])
+            + 16)
+            >> 5,
+    )
+}
+
+fn alpha_diagonal(references: &PredictionReferences, row: usize, col: usize) -> u8 {
+    if col > row {
+        let i = col - row - 1;
+        filter3(
+            if i == 0 {
+                references.top_left
+            } else {
+                references.top[i - 1]
+            },
+            references.top[i],
+            references.top[i + 1],
+        )
+    } else if row > col {
+        let i = row - col - 1;
+        filter3(
+            if i == 0 {
+                references.top_left
+            } else {
+                references.left[i - 1]
+            },
+            references.left[i],
+            references.left[i + 1],
+        )
+    } else {
+        filter3(references.left[0], references.top_left, references.top[0])
+    }
+}
+
+fn alpha_planar(
+    references: &PredictionReferences,
+    width: usize,
+    row: usize,
+    col: usize,
+    first_row_top_unavailable: bool,
+) -> u8 {
+    let e = width - 1;
+    let te = if references.first_row && first_row_top_unavailable {
+        0
+    } else {
+        references.top[e]
+    };
+    let tv = if references.first_row && first_row_top_unavailable {
+        0
+    } else {
+        references.top[col]
+    };
+    let h = u32::try_from(e - col).expect("validated width is at most 16")
+        * u32::from(references.left[row])
+        + u32::try_from(col + 1).expect("validated width is at most 16") * u32::from(te);
+    let v = u32::try_from(e - row).expect("validated width is at most 16") * u32::from(tv)
+        + u32::try_from(row + 1).expect("validated width is at most 16")
+            * u32::from(references.left[e]);
+    byte_sample(
+        (h + v + u32::try_from(width).expect("validated width is at most 16"))
+            / u32::try_from(2 * width).expect("validated width is at most 16"),
+    )
+}
+
 pub fn predict_alpha(
     references: &PredictionReferences,
     width: usize,
@@ -197,86 +345,10 @@ pub fn predict_alpha(
                 }
                 1 => references.left[row],
                 2 if width == 8 && references.first_row && first_row_top_unavailable => 0,
-                2 => {
-                    let mut sum = u32::try_from(width).expect("validated width is at most 16");
-                    for i in 0..width {
-                        sum += u32::from(references.top[i]) + u32::from(references.left[i]);
-                    }
-                    let dc = sum / u32::try_from(2 * width).expect("validated width is at most 16");
-                    if width != 4 {
-                        byte_sample(dc)
-                    } else if row == 0 && col == 0 {
-                        byte_sample(
-                            (3 * (u32::from(references.left[0]) + u32::from(references.top[0]))
-                                + 2 * dc
-                                + 4)
-                                >> 3,
-                        )
-                    } else if row == 0 {
-                        byte_sample((3 * u32::from(references.top[col]) + 5 * dc + 4) >> 3)
-                    } else if col == 0 {
-                        byte_sample((3 * u32::from(references.left[row]) + 5 * dc + 4) >> 3)
-                    } else {
-                        byte_sample(dc)
-                    }
-                }
+                2 => alpha_dc(references, width, row, col),
                 3 if references.first_row && first_row_top_unavailable => 0,
-                3 => {
-                    if col > row {
-                        let i = col - row - 1;
-                        filter3(
-                            if i == 0 {
-                                references.top_left
-                            } else {
-                                references.top[i - 1]
-                            },
-                            references.top[i],
-                            references.top[i + 1],
-                        )
-                    } else if row > col {
-                        let i = row - col - 1;
-                        filter3(
-                            if i == 0 {
-                                references.top_left
-                            } else {
-                                references.left[i - 1]
-                            },
-                            references.left[i],
-                            references.left[i + 1],
-                        )
-                    } else {
-                        filter3(references.left[0], references.top_left, references.top[0])
-                    }
-                }
-                4 => {
-                    let mut main = [0_u8; 35];
-                    let origin = 17;
-                    main[origin] = references.top_left;
-                    for i in 0..17 {
-                        main[origin + i + 1] = references.top[i];
-                    }
-                    let mut sum = 128_i32;
-                    for n in 1..=width {
-                        sum += 630;
-                        let idx = usize::try_from(sum >> 8).expect("angular index is nonnegative");
-                        main[origin - n] = if idx == 0 {
-                            references.top_left
-                        } else {
-                            references.left[idx - 1]
-                        };
-                    }
-                    let d = -((block_coordinate(row) + 1) * 13);
-                    let integer = d >> 5;
-                    let frac = d & 31;
-                    let i = block_coordinate(col) + integer + 1;
-                    byte_sample_signed(
-                        ((32 - frac) * i32::from(main[block_index(block_coordinate(origin) + i)])
-                            + frac
-                                * i32::from(main[block_index(block_coordinate(origin) + i + 1)])
-                            + 16)
-                            >> 5,
-                    )
-                }
+                3 => alpha_diagonal(references, row, col),
+                4 => alpha_angular_top(references, width, row, col),
                 5 => {
                     let d = (row + 1) * 13;
                     let i = col + (d >> 5);
@@ -302,34 +374,7 @@ pub fn predict_alpha(
                         )
                     }
                 }
-                7 => {
-                    let corner = if width == 4 {
-                        references.top_left
-                    } else {
-                        filter3(references.left[0], references.top_left, references.top[0])
-                    };
-                    let mut main = [0_u8; 35];
-                    let origin = 17;
-                    main[origin] = corner;
-                    for i in 0..17 {
-                        main[origin + i + 1] = edge_filter(references, false, i, width);
-                    }
-                    for n in 1_usize..=16 {
-                        let idx = ((n * 630 + 128) >> 8).saturating_sub(1).min(16);
-                        main[origin - n] = edge_filter(references, true, idx, width);
-                    }
-                    let d = -((block_coordinate(col) + 1) * 13);
-                    let integer = if d < 0 { -((-d + 31) / 32) } else { d / 32 };
-                    let frac = d - integer * 32;
-                    let i = block_coordinate(row) + integer + 1;
-                    byte_sample_signed(
-                        ((32 - frac) * i32::from(main[block_index(block_coordinate(origin) + i)])
-                            + frac
-                                * i32::from(main[block_index(block_coordinate(origin) + i + 1)])
-                            + 16)
-                            >> 5,
-                    )
-                }
+                7 => alpha_angular_left(references, width, row, col),
                 8 => {
                     let d = (col + 1) * 13;
                     let i = row + (d >> 5);
@@ -343,31 +388,7 @@ pub fn predict_alpha(
                             >> 5,
                     )
                 }
-                17 => {
-                    let e = width - 1;
-                    let te = if references.first_row && first_row_top_unavailable {
-                        0
-                    } else {
-                        references.top[e]
-                    };
-                    let tv = if references.first_row && first_row_top_unavailable {
-                        0
-                    } else {
-                        references.top[col]
-                    };
-                    let h = u32::try_from(e - col).expect("validated width is at most 16")
-                        * u32::from(references.left[row])
-                        + u32::try_from(col + 1).expect("validated width is at most 16")
-                            * u32::from(te);
-                    let v = u32::try_from(e - row).expect("validated width is at most 16")
-                        * u32::from(tv)
-                        + u32::try_from(row + 1).expect("validated width is at most 16")
-                            * u32::from(references.left[e]);
-                    byte_sample(
-                        (h + v + u32::try_from(width).expect("validated width is at most 16"))
-                            / u32::try_from(2 * width).expect("validated width is at most 16"),
-                    )
-                }
+                17 => alpha_planar(references, width, row, col, first_row_top_unavailable),
                 _ => return Err(PredictionError::InvalidMode),
             };
             output[row * width + col] = v;
@@ -664,27 +685,6 @@ pub fn prediction_direction_for_mode(mode: u8) -> Option<u8> {
     D.get(mode as usize).copied()
 }
 
-pub fn predict_signed_top_or_left(
-    left: &[i16; 33],
-    top: &[i16; 33],
-    top_mode: bool,
-    output: &mut [i16],
-) -> Result<(), PredictionError> {
-    if output.len() < 256 {
-        return Err(PredictionError::BufferTooSmall);
-    }
-    for row in 0..16 {
-        for col in 0..16 {
-            output[row * 16 + col] = if top_mode {
-                top[col + 1]
-            } else {
-                left[row + 1]
-            };
-        }
-    }
-    Ok(())
-}
-
 pub fn predict_signed_filtered_diagonal(
     left: &[i16; 33],
     top: &[i16; 33],
@@ -790,9 +790,7 @@ pub fn predict_signed_angular(
     let side = if horizontal { top } else { left };
     let mut refs = [0_i16; 65];
     let origin = 32_i32;
-    for i in 0..33 {
-        refs[32 + i] = main[i];
-    }
+    refs[32..65].copy_from_slice(main);
     if angle < 0 {
         let mut sum = 128_i32;
         for i in 1..=width {

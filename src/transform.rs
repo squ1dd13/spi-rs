@@ -6,8 +6,6 @@ pub enum TransformError {
     InvalidWidth,
     #[error("invalid transform coefficient slot count")]
     InvalidCount,
-    #[error("unsupported transform callback")]
-    InvalidCallback,
     #[error("transform buffer is too small")]
     BufferTooSmall,
 }
@@ -224,6 +222,52 @@ fn transform8(values: &mut [i16], callback: u8) {
 }
 
 /// Reconstruct one component's callback slots into a row-major packed output.
+fn reconstruct_callback7(coefficients: &[i16; 64], alternate_profile: bool, output: &mut [i16]) {
+    let weights = if alternate_profile {
+        &A4
+    } else {
+        &CALLBACK7_W4
+    };
+    let mut q = [0_i16; 16];
+    for i in 0..16 {
+        q[i] = truncate_signed_halfword(
+            (i32::from(coefficients[i]) * i32::from(weights[i])).cast_unsigned(),
+        );
+    }
+    let mut t = [0_i16; 16];
+    for c in 0..4 {
+        let (x0, x1, x2, x3) = (
+            i32::from(q[c]),
+            i32::from(q[4 + c]),
+            i32::from(q[8 + c]),
+            i32::from(q[12 + c]),
+        );
+        let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
+        t[c] = truncate_i32(a0 + a2);
+        t[4 + c] = truncate_i32(a1 + a3);
+        t[8 + c] = truncate_i32(a1 - a3);
+        t[12 + c] = truncate_i32(a0 - a2);
+    }
+    for r in 0..4 {
+        let s = &t[r * 4..r * 4 + 4];
+        let (x0, x1, x2, x3) = (
+            i32::from(s[0]),
+            i32::from(s[1]),
+            i32::from(s[2]),
+            i32::from(s[3]),
+        );
+        let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
+        for c in 0..4 {
+            output[c * 4 + r] = truncate_signed_halfword(
+                ([a0 + a2, a1 + a3, a1 - a3, a0 - a2][c]
+                    .cast_unsigned()
+                    .wrapping_add(32))
+                    >> 6,
+            );
+        }
+    }
+}
+
 /// Each slot occupies `width * width` samples. Callback 7 uses a dedicated 4 by 4 path.
 pub fn reconstruct_component_residual(
     width: usize,
@@ -251,49 +295,11 @@ pub fn reconstruct_component_residual(
         let mut v = [0_i16; 64];
         v[..slot_len].copy_from_slice(&coefficients[slot][..slot_len]);
         if width == 4 && mode == 7 {
-            let weights = if alternate_profile {
-                &A4
-            } else {
-                &CALLBACK7_W4
-            };
-            let mut q = [0_i16; 16];
-            for i in 0..16 {
-                q[i] = truncate_signed_halfword(
-                    (i32::from(coefficients[slot][i]) * i32::from(weights[i])).cast_unsigned(),
-                );
-            }
-            let mut t = [0_i16; 16];
-            for c in 0..4 {
-                let (x0, x1, x2, x3) = (
-                    i32::from(q[c]),
-                    i32::from(q[4 + c]),
-                    i32::from(q[8 + c]),
-                    i32::from(q[12 + c]),
-                );
-                let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
-                t[c] = truncate_i32(a0 + a2);
-                t[4 + c] = truncate_i32(a1 + a3);
-                t[8 + c] = truncate_i32(a1 - a3);
-                t[12 + c] = truncate_i32(a0 - a2);
-            }
-            for r in 0..4 {
-                let s = &t[r * 4..r * 4 + 4];
-                let (x0, x1, x2, x3) = (
-                    i32::from(s[0]),
-                    i32::from(s[1]),
-                    i32::from(s[2]),
-                    i32::from(s[3]),
-                );
-                let (a0, a1, a2, a3) = (x0 + x2, x0 - x2, x1 + (x3 >> 1), (x1 >> 1) - x3);
-                for c in 0..4 {
-                    output[slot * slot_len + c * 4 + r] = truncate_signed_halfword(
-                        ([a0 + a2, a1 + a3, a1 - a3, a0 - a2][c]
-                            .cast_unsigned()
-                            .wrapping_add(32))
-                            >> 6,
-                    );
-                }
-            }
+            reconstruct_callback7(
+                &coefficients[slot],
+                alternate_profile,
+                &mut output[slot * slot_len..(slot + 1) * slot_len],
+            );
             continue;
         }
         let weights = if width == 4 && alternate_profile {
@@ -323,9 +329,9 @@ pub fn reconstruct_component_residual(
             }
         }
         if width == 4 {
-            transform4(&mut v[..16], mode)
+            transform4(&mut v[..16], mode);
         } else {
-            transform8(&mut v[..64], mode)
+            transform8(&mut v[..64], mode);
         }
         if mode == 1 {
             output[slot * slot_len..(slot + 1) * slot_len].fill(v[0]);
