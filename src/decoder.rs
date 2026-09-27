@@ -186,6 +186,7 @@ fn compose_rows(
         let alpha_row = alpha.map_or(0, |plane| row * plane.stride);
         for x in 0..width {
             let pixel = output_row + x * 4;
+            // Stored source planes are green, blue, red; the output is RGBA.
             output[pixel] = colour.planes[2][colour_row + x];
             output[pixel + 1] = colour.planes[0][colour_row + x];
             output[pixel + 2] = colour.planes[1][colour_row + x];
@@ -408,6 +409,7 @@ pub fn decode_with_limits(
             detail: "picture has no records",
         });
     }
+    // Each record starts at a fixed span. The last record can cover fewer rows.
     let slice_rows = blocks_y.div_ceil(records.len());
     let output_len = check_memory(
         (width, height),
@@ -497,14 +499,19 @@ mod tests {
         input
     }
 
-    fn raw_record(index: u16, colour: [u8; 3], alpha: Option<u8>) -> Vec<u8> {
-        let mut body = vec![0x30]; // method 5, then byte alignment
-        for value in colour {
-            body.extend_from_slice(&[value; 256]);
+    fn raw_record_rows(index: u16, colours: &[[u8; 3]], alpha: Option<u8>) -> Vec<u8> {
+        let mut body = Vec::new();
+        for colour in colours {
+            body.push(0x30); // method 5, then byte alignment
+            for value in colour {
+                body.extend_from_slice(&[*value; 256]);
+            }
         }
         if let Some(value) = alpha {
-            body.push(0x30); // alpha method 5, then byte alignment
-            body.extend_from_slice(&[value; 256]);
+            for _ in colours {
+                body.push(0x30); // alpha method 5, then byte alignment
+                body.extend_from_slice(&[value; 256]);
+            }
         }
         let len = 14 + body.len();
         let mut record = vec![0xaa, 2];
@@ -518,6 +525,10 @@ mod tests {
         record.extend_from_slice(&[0; 5]); // remaining 40 header bits
         record.extend_from_slice(&body);
         record
+    }
+
+    fn raw_record(index: u16, colour: [u8; 3], alpha: Option<u8>) -> Vec<u8> {
+        raw_record_rows(index, &[colour], alpha)
     }
 
     #[test]
@@ -583,6 +594,23 @@ mod tests {
             &pixels.as_raw()[16 * 16 * 4..16 * 16 * 4 + 4],
             &[7, 5, 6, 8]
         );
+    }
+
+    #[test]
+    fn nominal_slice_span_covers_a_short_final_slice() {
+        let mut records = raw_record_rows(0, &[[1, 2, 3], [4, 5, 6]], None);
+        records.extend_from_slice(&raw_record_rows(1, &[[7, 8, 9], [10, 11, 12]], None));
+        records.extend_from_slice(&raw_record_rows(2, &[[13, 14, 15]], None));
+        let pixels = crate::decode(&framed(16, 65, 2, &records)).unwrap();
+        for (row, expected) in [
+            (0, [3, 1, 2, 255]),
+            (16, [6, 4, 5, 255]),
+            (32, [9, 7, 8, 255]),
+            (48, [12, 10, 11, 255]),
+            (64, [15, 13, 14, 255]),
+        ] {
+            assert_eq!(&pixels.as_raw()[row * 16 * 4..row * 16 * 4 + 4], &expected);
+        }
     }
 
     #[test]
