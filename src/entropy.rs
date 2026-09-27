@@ -172,6 +172,9 @@ pub fn read_context_index(
             return Err(EntropyError::InvalidCode);
         }
         let extra = width - old_available;
+        if reader.available < extra {
+            return Err(EntropyError::InvalidCode);
+        }
         let suffix = (reader.accumulator >> (32 - extra)) | prefix;
         reader.accumulator = lz(reader.accumulator, extra);
         reader.available -= extra;
@@ -202,6 +205,9 @@ fn read_contextual_literal(
         old_accumulator >> (32 - bits_for_literal)
     } else {
         if !reader.refill(4) {
+            return Err(EntropyError::InvalidCode);
+        }
+        if reader.available < bits_for_literal {
             return Err(EntropyError::InvalidCode);
         }
         let prefix_fragment = old_accumulator >> (32 - prefix_bits);
@@ -237,7 +243,7 @@ fn read_contextual_run_control(
     let mut candidate = reader.accumulator >> (32 - lookahead_bits);
     let next_shift = i32::try_from(lookahead_bits).expect("lookahead is at most 31")
         - i32::try_from(available_after_lookahead).expect("available bits are at most 32");
-    if next_shift >= 1
+    if (1..=8).contains(&next_shift)
         && let Some(next) = reader.peek_next_byte()
     {
         candidate |= u32::from(next) >> (8 - u32::try_from(next_shift).expect("shift is positive"));
@@ -269,6 +275,9 @@ fn read_contextual_run_control(
         }
         bits_for_code = bits_for_code.wrapping_sub(available_after_lookahead);
     }
+    if reader.available < bits_for_code {
+        return Err(EntropyError::InvalidCode);
+    }
     if bits_for_code == 32 {
         reader.accumulator = 0;
         reader.available = 0;
@@ -290,6 +299,9 @@ fn read_contextual_run_control(
             let new_accumulator = reader.accumulator;
             let extra = u32::try_from(refill).expect("refill is positive");
             let new_available = reader.available;
+            if new_available < extra {
+                return Err(EntropyError::InvalidCode);
+            }
             reader.accumulator = lz(new_accumulator, extra);
             reader.available = new_available - extra;
             code_value = (new_accumulator >> (32 - extra)) | prefix_value;
@@ -1054,5 +1066,35 @@ mod tests {
             Err(EntropyError::InvalidCode)
         );
         assert_eq!(reader.byte_offset, reader.size);
+    }
+
+    #[test]
+    fn partial_refills_do_not_consume_missing_bits() {
+        let data = [0_u8; 5];
+        let mut literal_reader = ContextBitReader::new(&data);
+        literal_reader.byte_offset = 4;
+        literal_reader.available = 1;
+        literal_reader.accumulator = 0x8000_0000;
+        assert_eq!(
+            read_contextual_literal(&mut literal_reader, 31),
+            Err(EntropyError::InvalidCode)
+        );
+
+        let mut run_reader = ContextBitReader::new(&data);
+        run_reader.byte_offset = 4;
+        assert_eq!(
+            read_contextual_run_control(&mut run_reader),
+            Err(EntropyError::InvalidCode)
+        );
+
+        for available in 0..=8 {
+            for accumulator in [0, 0x1000_0000, 0x8000_0000, u32::MAX] {
+                let mut index_reader = ContextBitReader::new(&data);
+                index_reader.byte_offset = 4;
+                index_reader.available = available;
+                index_reader.accumulator = accumulator;
+                let _ = read_context_index(&mut index_reader);
+            }
+        }
     }
 }
