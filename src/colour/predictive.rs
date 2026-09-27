@@ -2,8 +2,7 @@
 
 use crate::{
     bits::{BitReader, ContextBitReader},
-    colour::{ColourState, allocation, invalid, references},
-    decoder::SliceGeometry,
+    colour::{BlockPosition, ColourMemoryBudget, ColourState, allocation, invalid, references},
     entropy::{
         CallbackKind, CoefficientHistory, ComponentRequest, ComponentResult,
         decode_contextual_component,
@@ -79,12 +78,24 @@ pub(super) fn decode_block(
     record: &Record<'_>,
     state: &mut ColourState,
     output: &mut [Vec<u8>; 3],
-    geometry: SliceGeometry,
-    position: (usize, usize, usize),
+    position: BlockPosition,
     histories: &mut Option<[CoefficientHistory; 3]>,
+    budget: ColourMemoryBudget,
 ) -> Result<(), DecodeError> {
-    let (block_x, local_y, global_y) = position;
-    ensure_histories(histories, state.block_width, geometry.block_rows, local_y)?;
+    let BlockPosition {
+        geometry,
+        x: block_x,
+        local_y,
+        global_y,
+    } = position;
+    ensure_histories(
+        histories,
+        state.block_width,
+        geometry.block_rows,
+        local_y,
+        output,
+        budget,
+    )?;
     let histories = histories.as_mut().expect("histories initialised");
     references::update(state, block_x, local_y, global_y)?;
 
@@ -179,6 +190,8 @@ fn ensure_histories(
     block_width: usize,
     rows: usize,
     local_y: usize,
+    output: &[Vec<u8>; 3],
+    budget: ColourMemoryBudget,
 ) -> Result<(), DecodeError> {
     if histories.is_none() {
         let stride = block_width
@@ -187,8 +200,22 @@ fn ensure_histories(
             .and_then(|v| u16::try_from(v).ok())
             .ok_or_else(|| allocation("colour coefficient history"))?;
         let rows = u16::try_from(rows).map_err(|_| allocation("colour coefficient history"))?;
+        let history_len = usize::from(stride)
+            .checked_mul(1 + usize::from(rows) * 4 + 4)
+            .ok_or_else(|| allocation("colour coefficient history"))?;
+        let additional = history_len
+            .checked_mul(3)
+            .and_then(|bytes| {
+                history_len
+                    .div_ceil(8)
+                    .checked_mul(3)
+                    .and_then(|neutral| bytes.checked_add(neutral))
+            })
+            .ok_or_else(|| allocation("colour coefficient history"))?;
+        budget.check_with_additional(output, histories, additional)?;
         let make = || CoefficientHistory::new(stride, rows).map_err(coefficient_error);
         *histories = Some([make()?, make()?, make()?]);
+        budget.check(output, histories)?;
         for y in 1..=local_y {
             for (plane, history) in histories
                 .as_mut()

@@ -628,6 +628,10 @@ pub struct CoefficientHistory {
 }
 
 impl CoefficientHistory {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.bytes.capacity() + self.neutral.capacity().div_ceil(8)
+    }
+
     pub(crate) fn new(row_stride: u16, slice_rows: u16) -> Result<Self, EntropyError> {
         let stride = usize::from(row_stride);
         if stride == 0 {

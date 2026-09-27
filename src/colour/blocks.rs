@@ -1,7 +1,7 @@
 use super::{predictive, references};
 use crate::{
     bits::{BitReader, ContextBitReader},
-    colour::{ColourSlice, ColourState, allocation, invalid},
+    colour::{BlockPosition, ColourMemoryBudget, ColourSlice, ColourState, allocation, invalid},
     decoder::SliceGeometry,
     entropy::{CoefficientHistory, decode_contextual_indices, decode_rle_plane},
     error::{CoefficientError, DecodeError},
@@ -13,12 +13,14 @@ struct Palette {
     entries: usize,
     prefix: u32,
     bytes: Vec<u8>,
+    budget: ColourMemoryBudget,
 }
 
 pub(super) fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
     state: &mut ColourState,
+    budget: ColourMemoryBudget,
 ) -> Result<ColourSlice, DecodeError> {
     validate_geometry(geometry, state)?;
     if record.payload_offset.checked_mul(8).is_none()
@@ -51,8 +53,10 @@ pub(super) fn decode_slice(
         entries: 0,
         prefix: 0,
         bytes: Vec::new(),
+        budget,
     };
     let mut coefficient_histories: Option<[CoefficientHistory; 3]> = None;
+    palette.budget.check(&planes, &coefficient_histories)?;
     for local_y in 0..geometry.block_rows {
         let global_block_y = state.global_row(local_y, geometry.absolute_block_row)?;
         if local_y != 0
@@ -147,19 +151,19 @@ fn decode_colour_block(
                     record,
                     state,
                     planes,
-                    geometry,
-                    (block_x, local_y, global_block_y),
+                    position,
                     coefficient_histories,
+                    palette.budget,
                 )?;
             }
             4 => palette_block(
                 bits,
-                record.payload,
-                record.payload_offset,
+                record,
                 palette,
                 state,
                 planes,
                 position,
+                coefficient_histories,
             )?,
             5 => raw(
                 bits,
@@ -354,15 +358,12 @@ fn residual(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct BlockPosition {
-    geometry: SliceGeometry,
-    x: usize,
-    local_y: usize,
-    global_y: usize,
-}
-
-fn read_palette(bits: &mut BitReader<'_>, palette: &mut Palette) -> Result<(), DecodeError> {
+fn read_palette(
+    bits: &mut BitReader<'_>,
+    palette: &mut Palette,
+    planes: &[Vec<u8>; 3],
+    histories: &Option<[CoefficientHistory; 3]>,
+) -> Result<(), DecodeError> {
     let marker = bits
         .read_bit()
         .map_err(|_| invalid("truncated palette marker"))?;
@@ -378,8 +379,8 @@ fn read_palette(bits: &mut BitReader<'_>, palette: &mut Palette) -> Result<(), D
             .read_bits(4)
             .map_err(|_| invalid("truncated palette prefix"))?;
         if prefix == 0 {
-            ensure_capacity(&mut palette.bytes, 3, "colour palette")?;
             palette.bytes.clear();
+            reserve_palette(palette, 3, planes, histories)?;
             for _ in 0..3 {
                 palette.bytes.push(
                     bits.read_byte()
@@ -412,7 +413,7 @@ fn read_palette(bits: &mut BitReader<'_>, palette: &mut Palette) -> Result<(), D
             }
             if byte_count > old_len {
                 let add = byte_count - old_len;
-                ensure_capacity(&mut palette.bytes, add, "colour palette")?;
+                reserve_palette(palette, add, planes, histories)?;
                 for _ in 0..add {
                     palette.bytes.push(
                         bits.read_byte()
@@ -427,14 +428,39 @@ fn read_palette(bits: &mut BitReader<'_>, palette: &mut Palette) -> Result<(), D
     Ok(())
 }
 
+fn reserve_palette(
+    palette: &mut Palette,
+    additional: usize,
+    planes: &[Vec<u8>; 3],
+    histories: &Option<[CoefficientHistory; 3]>,
+) -> Result<(), DecodeError> {
+    let required_capacity = palette
+        .bytes
+        .len()
+        .checked_add(additional)
+        .ok_or_else(|| allocation("colour palette"))?;
+    palette
+        .budget
+        .with_palette_capacity(required_capacity.max(palette.bytes.capacity()))
+        .check(planes, histories)?;
+    palette
+        .bytes
+        .try_reserve_exact(additional)
+        .map_err(|_| allocation("colour palette"))?;
+    palette.budget = palette
+        .budget
+        .with_palette_capacity(palette.bytes.capacity());
+    palette.budget.check(planes, histories)
+}
+
 fn palette_block(
     bits: &mut BitReader<'_>,
-    stream: &[u8],
-    payload_offset: usize,
+    record: &Record<'_>,
     palette: &mut Palette,
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     position: BlockPosition,
+    histories: &Option<[CoefficientHistory; 3]>,
 ) -> Result<(), DecodeError> {
     let BlockPosition {
         geometry: g,
@@ -442,9 +468,9 @@ fn palette_block(
         local_y: ly,
         global_y: gy,
     } = position;
-    read_palette(bits, palette)?;
+    read_palette(bits, palette, out, histories)?;
     if palette.prefix != 0 {
-        let mut reader = ContextBitReader::new(stream);
+        let mut reader = ContextBitReader::new(record.payload);
         if !reader.initialise_at_bit(bits.bit_position()) {
             return Err(invalid("invalid palette index reader"));
         }
@@ -452,7 +478,7 @@ fn palette_block(
         decode_contextual_indices(&mut reader, palette.prefix, &mut indices).map_err(|error| {
             DecodeError::Coefficients(CoefficientError::Syntax(Box::new(error))).at(
                 crate::ErrorContext {
-                    bit_position: Some(payload_offset * 8 + reader.logical_bit()),
+                    bit_position: Some(record.payload_offset * 8 + reader.logical_bit()),
                     ..crate::ErrorContext::default()
                 },
             )
@@ -484,15 +510,6 @@ fn palette_block(
         write_block(state, out, g, bx, ly, gy, &samples);
     }
     Ok(())
-}
-
-fn ensure_capacity(
-    vec: &mut Vec<u8>,
-    additional: usize,
-    resource: &'static str,
-) -> Result<(), DecodeError> {
-    vec.try_reserve(additional)
-        .map_err(|_| allocation(resource))
 }
 
 fn spatial_copy(

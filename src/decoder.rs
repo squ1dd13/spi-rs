@@ -140,7 +140,7 @@ fn check_memory(
     Ok(output)
 }
 
-fn check_live_memory(parts: &[usize], limit: usize) -> Result<(), DecodeError> {
+fn check_live_memory(parts: &[usize], limit: usize) -> Result<usize, DecodeError> {
     let total = parts.iter().try_fold(0_usize, |sum, part| {
         checked_add(sum, *part, "decoder memory", limit)
     })?;
@@ -151,7 +151,7 @@ fn check_live_memory(parts: &[usize], limit: usize) -> Result<(), DecodeError> {
             limit,
         });
     }
-    Ok(())
+    Ok(total)
 }
 
 fn compose_rows(
@@ -257,14 +257,29 @@ impl RecordDecodeContext<'_> {
         let mut covered_rows = 0_usize;
         for (index, record) in records.iter().enumerate() {
             let geometry = self.record_geometry(record, index, covered_rows)?;
-            let colour = crate::colour::decode_slice(record, geometry, self.colour_state).map_err(
-                |error| {
-                    error.at(ErrorContext {
-                        record: Some(index),
-                        ..ErrorContext::default()
-                    })
-                },
+            let base_live_bytes = check_live_memory(
+                &[
+                    self.output.capacity(),
+                    self.record_storage,
+                    self.colour_state.heap_bytes(),
+                    self.alpha_state
+                        .as_ref()
+                        .map_or(0, crate::alpha::AlphaState::heap_bytes),
+                ],
+                self.memory_limit,
             )?;
+            let budget = crate::colour::ColourMemoryBudget {
+                base_live_bytes,
+                limit: self.memory_limit,
+                palette_capacity: 0,
+            };
+            let colour = crate::colour::decode_slice(record, geometry, self.colour_state, budget)
+                .map_err(|error| {
+                error.at(ErrorContext {
+                    record: Some(index),
+                    ..ErrorContext::default()
+                })
+            })?;
             log::debug!("record {index}: colour endpoint {} bits", colour.end_bit);
             let aligned =
                 colour
