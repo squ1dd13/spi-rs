@@ -49,6 +49,7 @@
     unused_import_braces
 )]
 
+// These crates are used by the CLI or tests, but the library lint checks all dependencies.
 #[cfg(feature = "cli")]
 use {clap as _, env_logger as _, tempfile as _};
 #[cfg(test)]

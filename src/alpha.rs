@@ -1169,8 +1169,6 @@ mod tests {
                 opaque_byte_c: 0,
                 opaque_byte_d: 0,
                 opaque_byte_e: 0,
-                terminal: 0,
-                end: false,
             },
         }
     }

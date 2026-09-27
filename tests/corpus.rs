@@ -219,6 +219,7 @@ fn local_corpus() {
         spi_files(root).unwrap_or_else(|error| panic!("cannot inspect corpus: {error}"));
 
     let mut failures = Vec::new();
+    let limits = DecodeLimits::default();
     for file in present_files.difference(&expected_files) {
         failures.push(format!("{}: unlisted SPI file", file.display()));
     }
@@ -244,14 +245,8 @@ fn local_corpus() {
             }
             match &case.expect {
                 Expectation::Image { rgba_sha256 } => {
-                    let pixels = decode_with_limits(
-                        &input,
-                        DecodeLimits {
-                            max_input_bytes: 256 * 1024 * 1024,
-                            max_memory_bytes: 512 * 1024 * 1024,
-                        },
-                    )
-                    .map_err(|error| format!("expected image, decode failed: {error}"))?;
+                    let pixels = decode_with_limits(&input, limits)
+                        .map_err(|error| format!("expected image, decode failed: {error}"))?;
                     let expected = case.header.as_ref().expect("image header validated");
                     if pixels.width() != expected.width || pixels.height() != expected.height {
                         return Err(format!(
@@ -265,21 +260,13 @@ fn local_corpus() {
                         return Err(format!("RGBA SHA-256 is {actual}"));
                     }
                 }
-                Expectation::Error { kind } => {
-                    match decode_with_limits(
-                        &input,
-                        DecodeLimits {
-                            max_input_bytes: 256 * 1024 * 1024,
-                            max_memory_bytes: 512 * 1024 * 1024,
-                        },
-                    ) {
-                        Ok(_) => return Err("expected a decode error, got an image".into()),
-                        Err(error) if error.kind().to_string() != *kind => {
-                            return Err(format!("error kind is {}", error.kind()));
-                        }
-                        Err(_) => {}
+                Expectation::Error { kind } => match decode_with_limits(&input, limits) {
+                    Ok(_) => return Err("expected a decode error, got an image".into()),
+                    Err(error) if error.kind().to_string() != *kind => {
+                        return Err(format!("error kind is {}", error.kind()));
                     }
-                }
+                    Err(_) => {}
+                },
             }
             Ok(())
         })();

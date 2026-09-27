@@ -114,8 +114,6 @@ pub struct RecordHeader {
     pub opaque_byte_c: u8,
     pub opaque_byte_d: u8,
     pub opaque_byte_e: u8,
-    pub terminal: u8,
-    pub end: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,75 +133,28 @@ fn parse_record_header(
     record_number: usize,
 ) -> Result<RecordHeader, FormatError> {
     let mut bits = crate::bits::BitReader::new(header_bytes);
-    let opaque_byte_b = bits
-        .read_byte()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let index = bits
-        .read_u16(16)
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let opaque_byte_a = bits
-        .read_byte()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let opaque_flag = bits
-        .read_bit()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?
-        != 0;
-    let opaque_bits = bits
-        .read_u8(2)
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let opaque_byte_c = bits
-        .read_byte()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let opaque_byte_d = bits
-        .read_byte()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let opaque_byte_e = bits
-        .read_byte()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let terminal = bits
-        .read_u8(4)
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?;
-    let end_flag = bits
-        .read_bit()
-        .map_err(|_| FormatError::InvalidRecordHeader {
-            record: record_number,
-        })?
-        != 0;
+    let (header, terminal, end_flag) = (|| -> Result<_, crate::bits::BitError> {
+        let header = RecordHeader {
+            opaque_byte_b: bits.read_byte()?,
+            index: bits.read_u16(16)?,
+            opaque_byte_a: bits.read_byte()?,
+            opaque_flag: bits.read_bit()? != 0,
+            opaque_bits: bits.read_u8(2)?,
+            opaque_byte_c: bits.read_byte()?,
+            opaque_byte_d: bits.read_byte()?,
+            opaque_byte_e: bits.read_byte()?,
+        };
+        Ok((header, bits.read_u8(4)?, bits.read_bit()? != 0))
+    })()
+    .map_err(|_| FormatError::InvalidRecordHeader {
+        record: record_number,
+    })?;
     if terminal != 0 || end_flag {
         return Err(FormatError::InvalidRecordHeader {
             record: record_number,
         });
     }
-    Ok(RecordHeader {
-        opaque_byte_b,
-        index,
-        opaque_byte_a,
-        opaque_flag,
-        opaque_bits,
-        opaque_byte_c,
-        opaque_byte_d,
-        opaque_byte_e,
-        terminal,
-        end: end_flag,
-    })
+    Ok(header)
 }
 
 pub fn parse_records(payload: &[u8], max_records: usize) -> Result<Vec<Record<'_>>, FormatError> {
