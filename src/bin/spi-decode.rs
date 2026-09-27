@@ -4,7 +4,12 @@
 //! `--max-memory-bytes` set the decoder limits. Existing output files require
 //! `--force`.
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    fs::File,
+    io::{BufWriter, Read, Write},
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use clap::Parser;
 use spi::{DecodeLimits, decode_with_limits, read_header};
@@ -27,21 +32,72 @@ struct Args {
     max_memory_bytes: usize,
 }
 
-fn ensure_output_writable(output: &std::path::Path, force: bool) -> Result<(), String> {
-    if output.exists() && !force {
+fn read_input(path: &Path, max_input_bytes: usize) -> Result<Vec<u8>, String> {
+    let file =
+        File::open(path).map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+    let max_len = u64::try_from(max_input_bytes).unwrap_or(u64::MAX);
+    let known_len = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?
+        .len();
+    if known_len > max_len {
         return Err(format!(
-            "output file already exists: {} (use --force to replace it)",
-            output.display()
+            "input {} exceeds the {max_input_bytes}-byte limit",
+            path.display()
         ));
     }
-    Ok(())
+    let mut input = Vec::new();
+    file.take(max_len.saturating_add(1))
+        .read_to_end(&mut input)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if input.len() > max_input_bytes {
+        return Err(format!(
+            "input {} exceeds the {max_input_bytes}-byte limit",
+            path.display()
+        ));
+    }
+    Ok(input)
 }
 
-fn run(args: Args) -> Result<(), String> {
-    ensure_output_writable(&args.output, args.force)?;
+fn publish_png(staged: tempfile::NamedTempFile, output: &Path, force: bool) -> Result<(), String> {
+    let result = if force {
+        staged.persist(output)
+    } else {
+        staged.persist_noclobber(output)
+    };
+    result.map(|_| ()).map_err(|error| {
+        if !force && error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!(
+                "output file already exists: {} (use --force to replace it)",
+                output.display()
+            )
+        } else {
+            format!("cannot publish {}: {}", output.display(), error.error)
+        }
+    })
+}
 
-    let input = std::fs::read(&args.input)
-        .map_err(|error| format!("cannot read {}: {error}", args.input.display()))?;
+fn save_png(pixels: &image::RgbaImage, output: &Path, force: bool) -> Result<(), String> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("cannot stage {}: {error}", output.display()))?;
+    {
+        let mut writer = BufWriter::new(staged.as_file_mut());
+        pixels
+            .write_to(&mut writer, image::ImageFormat::Png)
+            .map_err(|error| format!("cannot encode {}: {error}", output.display()))?;
+        writer
+            .flush()
+            .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
+    }
+    publish_png(staged, output, force)
+}
+
+fn run(args: &Args) -> Result<(), String> {
+    let input = read_input(&args.input, args.max_input_bytes)?;
     let limits = DecodeLimits {
         max_input_bytes: args.max_input_bytes,
         max_memory_bytes: args.max_memory_bytes,
@@ -56,15 +112,13 @@ fn run(args: Args) -> Result<(), String> {
         header.colour_mode,
         header.selector
     );
-    pixels
-        .save_with_format(&args.output, image::ImageFormat::Png)
-        .map_err(|error| format!("cannot write {}: {error}", args.output.display()))
+    save_png(&pixels, &args.output, args.force)
 }
 
 fn main() -> ExitCode {
     env_logger::init();
     let args = Args::parse();
-    match run(args) {
+    match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("spi-decode: {message}");
@@ -75,14 +129,41 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, ensure_output_writable};
+    use super::{Args, publish_png, read_input, save_png};
     use clap::Parser;
+    use std::{fs, io::Write};
 
     #[test]
-    fn existing_output_requires_force() {
-        let existing = std::env::current_exe().expect("test executable path");
-        assert!(ensure_output_writable(&existing, false).is_err());
-        assert!(ensure_output_writable(&existing, true).is_ok());
+    fn input_limit_is_checked_while_reading() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.spi");
+        fs::write(&input, b"abcd").unwrap();
+        assert!(read_input(&input, 3).is_err());
+        assert_eq!(read_input(&input, 4).unwrap(), b"abcd");
+    }
+
+    #[test]
+    fn publication_checks_for_an_output_created_after_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.png");
+        let mut staged = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        staged.write_all(b"new image").unwrap();
+        fs::write(&output, b"existing image").unwrap();
+        assert!(publish_png(staged, &output, false).is_err());
+        assert_eq!(fs::read(output).unwrap(), b"existing image");
+    }
+
+    #[test]
+    fn save_png_requires_force_to_replace_an_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.png");
+        let pixels = image::RgbaImage::from_raw(1, 1, vec![17, 23, 41, 0]).unwrap();
+        fs::write(&output, b"existing image").unwrap();
+        assert!(save_png(&pixels, &output, false).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"existing image");
+        save_png(&pixels, &output, true).unwrap();
+        let decoded = image::open(output).unwrap().into_rgba8();
+        assert_eq!(decoded.as_raw(), pixels.as_raw());
     }
 
     #[test]

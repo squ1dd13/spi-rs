@@ -50,7 +50,7 @@
 )]
 
 #[cfg(feature = "cli")]
-use {clap as _, env_logger as _};
+use {clap as _, env_logger as _, tempfile as _};
 #[cfg(test)]
 use {serde as _, serde_json as _, sha2 as _};
 
