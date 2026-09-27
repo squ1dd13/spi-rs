@@ -99,7 +99,7 @@ impl<'a> ContextBitReader<'a> {
         }
     }
 
-    pub(crate) fn initialize_at_bit(&mut self, bit: usize) -> bool {
+    pub(crate) fn initialise_at_bit(&mut self, bit: usize) -> bool {
         if self.size > usize::MAX / 8
             || bit > self.size * 8
             || bit / 8 > self.size
@@ -229,9 +229,9 @@ mod tests {
     }
 
     #[test]
-    fn contextual_initializer_tracks_unaligned_position() {
+    fn contextual_initialiser_tracks_unaligned_position() {
         let mut bits = ContextBitReader::new(&[0x80, 0x12, 0x34, 0x56]);
-        assert!(bits.initialize_at_bit(1));
+        assert!(bits.initialise_at_bit(1));
         assert_eq!(bits.accumulator, 0x0024_68ac);
         assert_eq!(bits.available, 31);
         assert_eq!(bits.logical_bit(), 1);

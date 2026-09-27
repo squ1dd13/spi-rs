@@ -1,7 +1,7 @@
-use crate::{DecodeError, color::allocation};
+use crate::{DecodeError, colour::allocation};
 
 /// Picture-wide padded planes and the boundary data used by predictive blocks.
-pub(crate) struct ColorState {
+pub(crate) struct ColourState {
     pub(crate) block_width: usize,
     pub(crate) total_block_rows: usize,
     pub(crate) stride: usize,
@@ -11,34 +11,34 @@ pub(crate) struct ColorState {
     pub(crate) histories: [[i16; 33]; 6],
 }
 
-impl ColorState {
+impl ColourState {
     pub(crate) fn new(block_width: usize, total_block_rows: usize) -> Result<Self, DecodeError> {
         if block_width == 0 || total_block_rows == 0 {
-            return Err(crate::color::invalid("empty picture geometry"));
+            return Err(crate::colour::invalid("empty picture geometry"));
         }
         let stride = block_width
             .checked_mul(16)
-            .ok_or_else(|| allocation("color history"))?;
+            .ok_or_else(|| allocation("colour history"))?;
         let height = total_block_rows
             .checked_mul(16)
-            .ok_or_else(|| allocation("color history"))?;
+            .ok_or_else(|| allocation("colour history"))?;
         let len = stride
             .checked_mul(height)
-            .ok_or_else(|| allocation("color history"))?;
+            .ok_or_else(|| allocation("colour history"))?;
         let mut planes = [Vec::new(), Vec::new(), Vec::new()];
         for plane in &mut planes {
             plane
                 .try_reserve_exact(len)
-                .map_err(|_| allocation("color history"))?;
+                .map_err(|_| allocation("colour history"))?;
             plane.resize(len, 0);
         }
         let blocks = block_width
             .checked_mul(total_block_rows)
-            .ok_or_else(|| allocation("color block state"))?;
+            .ok_or_else(|| allocation("colour block state"))?;
         let mut available = Vec::new();
         available
             .try_reserve_exact(blocks)
-            .map_err(|_| allocation("color block state"))?;
+            .map_err(|_| allocation("colour block state"))?;
         available.resize(blocks, 0);
         let mut banks = [[0_u8; 33]; 9];
         banks[8].fill(128);
@@ -60,9 +60,9 @@ impl ColorState {
     pub(crate) fn global_row(&self, local_row: usize, origin: usize) -> Result<usize, DecodeError> {
         let y = origin
             .checked_add(local_row)
-            .ok_or_else(|| crate::color::invalid("slice row overflow"))?;
+            .ok_or_else(|| crate::colour::invalid("slice row overflow"))?;
         if y >= self.total_block_rows {
-            return Err(crate::color::invalid("slice exceeds picture rows"));
+            return Err(crate::colour::invalid("slice exceeds picture rows"));
         }
         Ok(y)
     }

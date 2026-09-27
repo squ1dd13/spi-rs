@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum ErrorKind {
     Parse,
     UnsupportedOutputFormat,
-    UnsupportedColorMode,
+    UnsupportedColourMode,
     UnsupportedSyntax,
     Bitstream,
     Coefficients,
@@ -25,7 +25,7 @@ impl ErrorKind {
         match self {
             Self::Parse => "parse",
             Self::UnsupportedOutputFormat => "unsupported_output_format",
-            Self::UnsupportedColorMode => "unsupported_color_mode",
+            Self::UnsupportedColourMode => "unsupported_colour_mode",
             Self::UnsupportedSyntax => "unsupported_syntax",
             Self::Bitstream => "bitstream",
             Self::Coefficients => "coefficients",
@@ -107,8 +107,8 @@ pub enum DecodeError {
     Parse(#[from] ParseError),
     #[error("unsupported output selector {selector}")]
     UnsupportedOutputFormat { selector: u8 },
-    #[error("unsupported color mode {value}")]
-    UnsupportedColorMode { value: u8 },
+    #[error("unsupported colour mode {value}")]
+    UnsupportedColourMode { value: u8 },
     #[error(transparent)]
     Syntax(#[from] SyntaxError),
     #[error(transparent)]
@@ -140,7 +140,7 @@ impl DecodeError {
         match self {
             Self::Parse(_) => ErrorKind::Parse,
             Self::UnsupportedOutputFormat { .. } => ErrorKind::UnsupportedOutputFormat,
-            Self::UnsupportedColorMode { .. } => ErrorKind::UnsupportedColorMode,
+            Self::UnsupportedColourMode { .. } => ErrorKind::UnsupportedColourMode,
             Self::Syntax(SyntaxError::UnsupportedMethod { .. }) => ErrorKind::UnsupportedSyntax,
             Self::Syntax(_) => ErrorKind::Bitstream,
             Self::Coefficients(_) => ErrorKind::Coefficients,

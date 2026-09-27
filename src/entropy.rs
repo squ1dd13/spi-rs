@@ -124,7 +124,7 @@ fn leading_zeroes(value: u8) -> u32 {
 }
 
 /// Decode the width of the contextual Exp-Golomb prefix using the format's
-/// accumulator and lookahead refill behavior.
+/// accumulator and lookahead refill behaviour.
 pub(crate) fn read_context_prefix(reader: &mut ContextBitReader<'_>) -> Result<u32, EntropyError> {
     let old_available = reader.available;
     let lookahead = 24 | (old_available & 7);
@@ -568,7 +568,7 @@ pub(crate) fn decode_scanned_coefficient(
     block_width: u8,
     scan_variant: u8,
     scan_cursor: &mut u32,
-    color_long_symbol: bool,
+    colour_long_symbol: bool,
 ) -> Result<(u16, i16), EntropyError> {
     if partition_shift == 0 || partition_shift >= 16 {
         return Err(EntropyError::InvalidCode);
@@ -583,9 +583,9 @@ pub(crate) fn decode_scanned_coefficient(
     let code = (1_u32 << width) + (payload >> 1);
     let (delta, magnitude) = if width > 6 {
         let partition = code
-            .checked_sub(if color_long_symbol { 1 } else { 0x80 })
+            .checked_sub(if colour_long_symbol { 1 } else { 0x80 })
             .ok_or(EntropyError::InvalidCode)?;
-        if color_long_symbol {
+        if colour_long_symbol {
             (
                 (partition & 0xff),
                 (partition >> 8)
@@ -663,7 +663,7 @@ impl CoefficientHistory {
     pub(crate) fn begin_block_row(
         &mut self,
         block_y: u16,
-        normalize_zero: bool,
+        normalise_zero: bool,
     ) -> Result<(), EntropyError> {
         let end = self.origin + self.stride * 4;
         if end > self.bytes.len() {
@@ -679,9 +679,9 @@ impl CoefficientHistory {
                 let neutral =
                     (0..4).all(|row| self.neutral[self.origin + row * self.stride + column]);
                 let mut value = self.bytes[self.origin + 3 * self.stride + column];
-                if expose && uniform && neutral && normalize_zero && matches!(value, 0 | 3) {
+                if expose && uniform && neutral && normalise_zero && matches!(value, 0 | 3) {
                     value = 1;
-                } else if expose && uniform && neutral && !normalize_zero && value == 1 {
+                } else if expose && uniform && neutral && !normalise_zero && value == 1 {
                     value = 0;
                 }
                 self.bytes[self.origin - self.stride + column] = value;
@@ -843,7 +843,7 @@ pub(crate) struct ComponentRequest {
     pub maximum_width: u8,
     /// Zero selects a width from the stream. Values 4, 8, or 16 force a width.
     pub fixed_width: u8,
-    pub color_long_symbols: bool,
+    pub colour_long_symbols: bool,
     pub width_selector_already_read: bool,
 }
 
@@ -870,7 +870,7 @@ const STATE4_LUMA: [u8; 64] = [
     0x08, 0x0d, 0x31, 0x24, 0x18, 0x16, 0x2b, 0x17, 0x2a, 0x15, 0x29, 0x26, 0x22, 0x1a, 0x12, 0x06,
     0x27, 0x0a, 0x02, 0x21, 0x11, 0x1b, 0x05, 0x25, 0x23, 0x01, 0x19, 0x09, 0x13, 0x07, 0x0b, 0x03,
 ];
-const STATE4_COLOR: [u8; 64] = [
+const STATE4_COLOUR: [u8; 64] = [
     0x3c, 0x3f, 0x3e, 0x3d, 0x1c, 0x34, 0x2c, 0x38, 0x0c, 0x30, 0x14, 0x28, 0x1f, 0x2f, 0x3b, 0x10,
     0x37, 0x04, 0x20, 0x08, 0x1e, 0x36, 0x2e, 0x3a, 0x1d, 0x00, 0x24, 0x35, 0x2d, 0x18, 0x39, 0x0f,
     0x33, 0x32, 0x0e, 0x0d, 0x31, 0x16, 0x2b, 0x2a, 0x17, 0x15, 0x29, 0x22, 0x12, 0x26, 0x0a, 0x06,
@@ -976,8 +976,8 @@ pub(crate) fn decode_contextual_component(
 
     let state_value = if width == 4 {
         let (_, _, state_index) = read_context_index(reader)?;
-        let table = if request.color_long_symbols {
-            &STATE4_COLOR
+        let table = if request.colour_long_symbols {
+            &STATE4_COLOUR
         } else {
             &STATE4_LUMA
         };
@@ -1002,7 +1002,7 @@ pub(crate) fn decode_contextual_component(
         }
         let coefficient_count = (1_u32 << count_width) + suffix;
         let raw_mode = result.modes[slot];
-        let scan_variant = if request.color_long_symbols || raw_mode == 0x11 {
+        let scan_variant = if request.colour_long_symbols || raw_mode == 0x11 {
             0
         } else {
             *MODE_SCAN_VARIANT
@@ -1024,7 +1024,7 @@ pub(crate) fn decode_contextual_component(
                 width,
                 scan_variant,
                 &mut cursor,
-                request.color_long_symbols,
+                request.colour_long_symbols,
             )?;
             result.values[slot][position as usize] = value;
         }
@@ -1055,7 +1055,7 @@ mod tests {
     #[test]
     fn contextual_prefix_uses_terminal_lookahead_without_reading_past_end() {
         let mut reader = ContextBitReader::new(&[0, 0, 0, 0]);
-        assert!(reader.initialize_at_bit(0));
+        assert!(reader.initialise_at_bit(0));
         assert!(reader.read_bits(32));
         assert_eq!(
             read_context_prefix(&mut reader),

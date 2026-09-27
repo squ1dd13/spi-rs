@@ -1,12 +1,12 @@
 use super::{predictive, references};
 use crate::{
     bits::{BitReader, ContextBitReader},
-    color::{ColorSlice, ColorState, allocation, invalid},
+    colour::{ColourSlice, ColourState, allocation, invalid},
     decoder::SliceGeometry,
     entropy::{CoefficientHistory, decode_contextual_indices, decode_rle_plane},
     error::{CoefficientError, DecodeError},
     format::Record,
-    surface::{Motion, copy_color_motion},
+    surface::{Motion, copy_colour_motion},
 };
 
 struct Palette {
@@ -18,32 +18,32 @@ struct Palette {
 pub(super) fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
-    state: &mut ColorState,
-) -> Result<ColorSlice, DecodeError> {
+    state: &mut ColourState,
+) -> Result<ColourSlice, DecodeError> {
     validate_geometry(geometry, state)?;
     if record.payload_offset.checked_mul(8).is_none()
         || record.data.len() < record.payload_offset
         || record.payload.is_empty()
     {
-        return Err(invalid("record has no color payload"));
+        return Err(invalid("record has no colour payload"));
     }
     let stride = geometry
         .block_width
         .checked_mul(16)
-        .ok_or_else(|| allocation("color slice"))?;
+        .ok_or_else(|| allocation("colour slice"))?;
     let plane_len = stride
         .checked_mul(
             geometry
                 .block_rows
                 .checked_mul(16)
-                .ok_or_else(|| allocation("color slice"))?,
+                .ok_or_else(|| allocation("colour slice"))?,
         )
-        .ok_or_else(|| allocation("color slice"))?;
+        .ok_or_else(|| allocation("colour slice"))?;
     let mut planes = [Vec::new(), Vec::new(), Vec::new()];
     for plane in &mut planes {
         plane
             .try_reserve_exact(plane_len)
-            .map_err(|_| allocation("color slice"))?;
+            .map_err(|_| allocation("colour slice"))?;
         plane.resize(plane_len, 0);
     }
     let mut bits = BitReader::new(record.payload);
@@ -166,14 +166,14 @@ pub(super) fn decode_slice(
             })?;
         }
     }
-    Ok(ColorSlice {
+    Ok(ColourSlice {
         planes,
         stride,
         end_bit: record
             .payload_offset
             .checked_mul(8)
             .and_then(|base| base.checked_add(bits.bit_position()))
-            .ok_or_else(|| invalid("color bit position overflow"))?,
+            .ok_or_else(|| invalid("colour bit position overflow"))?,
     })
 }
 
@@ -186,14 +186,14 @@ fn at_block(error: DecodeError, record: &Record<'_>, block: usize, bit: usize) -
     })
 }
 
-fn validate_geometry(g: SliceGeometry, s: &ColorState) -> Result<(), DecodeError> {
+fn validate_geometry(g: SliceGeometry, s: &ColourState) -> Result<(), DecodeError> {
     if g.block_width != s.block_width
         || g.block_rows == 0
         || g.absolute_block_row
             .checked_add(g.block_rows)
             .is_none_or(|end| end > s.total_block_rows)
     {
-        return Err(invalid("slice geometry does not match color history"));
+        return Err(invalid("slice geometry does not match colour history"));
     }
     let padded_width = g
         .block_width
@@ -275,7 +275,7 @@ fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
 
 fn raw(
     bits: &mut BitReader<'_>,
-    state: &mut ColorState,
+    state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     g: SliceGeometry,
     bx: usize,
@@ -301,7 +301,7 @@ fn raw(
 
 fn residual(
     bits: &mut BitReader<'_>,
-    state: &mut ColorState,
+    state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     g: SliceGeometry,
     bx: usize,
@@ -352,7 +352,7 @@ fn palette_block(
     stream: &[u8],
     payload_offset: usize,
     palette: &mut Palette,
-    state: &mut ColorState,
+    state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     g: SliceGeometry,
     bx: usize,
@@ -374,7 +374,7 @@ fn palette_block(
             .read_bits(4)
             .map_err(|_| invalid("truncated palette prefix"))?;
         if prefix == 0 {
-            ensure_capacity(&mut palette.bytes, 3, "color palette")?;
+            ensure_capacity(&mut palette.bytes, 3, "colour palette")?;
             palette.bytes.clear();
             for _ in 0..3 {
                 palette.bytes.push(
@@ -391,7 +391,7 @@ fn palette_block(
                 + 1;
             let byte_count = count
                 .checked_mul(3)
-                .ok_or_else(|| allocation("color palette"))?;
+                .ok_or_else(|| allocation("colour palette"))?;
             if variant != 0 {
                 palette.bytes.clear();
             }
@@ -399,7 +399,7 @@ fn palette_block(
                 palette
                     .entries
                     .checked_mul(3)
-                    .ok_or_else(|| allocation("color palette"))?
+                    .ok_or_else(|| allocation("colour palette"))?
             } else {
                 0
             };
@@ -408,7 +408,7 @@ fn palette_block(
             }
             if byte_count > old_len {
                 let add = byte_count - old_len;
-                ensure_capacity(&mut palette.bytes, add, "color palette")?;
+                ensure_capacity(&mut palette.bytes, add, "colour palette")?;
                 for _ in 0..add {
                     palette.bytes.push(
                         bits.read_byte()
@@ -422,7 +422,7 @@ fn palette_block(
     }
     if palette.prefix != 0 {
         let mut reader = ContextBitReader::new(stream);
-        if !reader.initialize_at_bit(bits.bit_position()) {
+        if !reader.initialise_at_bit(bits.bit_position()) {
             return Err(invalid("invalid palette index reader"));
         }
         let mut indices = [0_u8; 256];
@@ -473,7 +473,7 @@ fn ensure_capacity(
 }
 
 fn spatial_copy(
-    state: &mut ColorState,
+    state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     g: SliceGeometry,
     bx: usize,
@@ -485,7 +485,7 @@ fn spatial_copy(
 }
 
 fn motion_copy(
-    state: &mut ColorState,
+    state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     g: SliceGeometry,
     bx: usize,
@@ -498,7 +498,7 @@ fn motion_copy(
     let global_y = gy * 16;
     let mut scratch = [[0_u8; 256]; 3];
     for p in 0..3 {
-        copy_color_motion(
+        copy_colour_motion(
             &mut state.planes[p],
             state.stride,
             state.stride,
@@ -518,7 +518,7 @@ fn motion_copy(
 }
 
 fn write_block<const N: usize>(
-    state: &mut ColorState,
+    state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
     _g: SliceGeometry,
     bx: usize,

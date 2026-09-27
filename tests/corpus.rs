@@ -154,7 +154,7 @@ fn spi_files(root: &Path) -> Result<HashSet<PathBuf>, String> {
             {
                 let relative = path
                     .strip_prefix(root)
-                    .map_err(|error| format!("cannot relativize {}: {error}", path.display()))?
+                    .map_err(|error| format!("cannot relativise {}: {error}", path.display()))?
                     .to_path_buf();
                 files.insert(relative);
             }

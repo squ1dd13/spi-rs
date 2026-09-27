@@ -1,4 +1,4 @@
-//! Color block decoding and picture-wide color history.
+//! Colour block decoding and picture-wide colour history.
 
 mod blocks;
 mod history;
@@ -11,16 +11,16 @@ use crate::{
     format::Record,
 };
 
-pub(crate) use history::ColorState;
+pub(crate) use history::ColourState;
 
 #[derive(Debug)]
-pub(crate) struct ColorSlice {
+pub(crate) struct ColourSlice {
     pub planes: [Vec<u8>; 3],
     pub stride: usize,
     pub end_bit: usize,
 }
 
-impl ColorSlice {
+impl ColourSlice {
     pub(crate) fn heap_bytes(&self) -> usize {
         self.planes.iter().map(Vec::capacity).sum()
     }
@@ -29,8 +29,8 @@ impl ColorSlice {
 pub(crate) fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
-    state: &mut ColorState,
-) -> Result<ColorSlice, DecodeError> {
+    state: &mut ColourState,
+) -> Result<ColourSlice, DecodeError> {
     blocks::decode_slice(record, geometry, state)
 }
 
@@ -40,7 +40,7 @@ fn allocation(resource: &'static str) -> DecodeError {
 
 fn invalid(detail: &'static str) -> DecodeError {
     DecodeError::Syntax(SyntaxError::Invalid {
-        stream: "color",
+        stream: "colour",
         detail,
     })
 }
@@ -117,7 +117,7 @@ mod tests {
         stream[513..769].fill(56);
         let data = record_data(&stream);
         let record = view(&data);
-        let mut state = ColorState::new(1, 1).unwrap();
+        let mut state = ColourState::new(1, 1).unwrap();
         let decoded = decode_slice(&record, geometry(), &mut state).unwrap();
         assert_eq!(decoded.planes[0][0], 12);
         assert_eq!(decoded.planes[1][0], 34);
@@ -141,20 +141,20 @@ mod tests {
         let stream = pack_bits(&encoded);
         let data = record_data(&stream);
         let record = view(&data);
-        let mut state = ColorState::new(1, 1).unwrap();
+        let mut state = ColourState::new(1, 1).unwrap();
         let decoded = decode_slice(&record, geometry(), &mut state).unwrap();
         assert_eq!(decoded.planes[0].len(), 256);
         assert_eq!(decoded.planes[0][0], 128);
     }
 
     #[test]
-    fn palette_single_color_expands_to_all_samples() {
+    fn palette_single_colour_expands_to_all_samples() {
         // Palette method 4 is 00 10, followed by marker 1, variant 0,
         // prefix width 0, then one RGB triplet.
-        // 0010 method, then palette marker/variant/prefix, then packed colors.
+        // 0010 method, then palette marker/variant/prefix, then packed colours.
         let data = record_data(&[0b0010_1000, 0x08, 0xd1, 0x59, 0xc0]);
         let record = view(&data);
-        let mut state = ColorState::new(1, 1).unwrap();
+        let mut state = ColourState::new(1, 1).unwrap();
         let decoded = decode_slice(&record, geometry(), &mut state).unwrap();
         assert_eq!(decoded.planes[0], vec![0x23; 256]);
         assert_eq!(decoded.planes[1], vec![0x45; 256]);
@@ -174,7 +174,7 @@ mod tests {
         let first = view(&first_data);
         let second_data = record_data(&[0b1000_0000]);
         let second = view(&second_data);
-        let mut state = ColorState::new(1, 2).unwrap();
+        let mut state = ColourState::new(1, 2).unwrap();
         let mut first_geometry = geometry();
         first_geometry.block_rows = 1;
         decode_slice(&first, first_geometry, &mut state).unwrap();

@@ -639,7 +639,7 @@ fn apply_component(
 pub(crate) fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
-    color_end_bit: usize,
+    colour_end_bit: usize,
     state: &mut AlphaState,
 ) -> Result<AlphaSlice, DecodeError> {
     if geometry.block_width != state.block_width
@@ -652,9 +652,9 @@ pub(crate) fn decode_slice(
     {
         return Err(invalid("slice geometry does not match alpha state"));
     }
-    let start = (color_end_bit + 7) & !7;
+    let start = (colour_end_bit + 7) & !7;
     let mut reader = ContextBitReader::new(record.data);
-    if !reader.initialize_at_bit(start) {
+    if !reader.initialise_at_bit(start) {
         return Err(at(
             invalid("alpha stream has no bounded reader window"),
             record,
@@ -782,7 +782,7 @@ pub(crate) fn decode_slice(
                 3 => {
                     if reader.read_value(1) != Some(1) {
                         return Err(at(
-                            invalid("predictive transform callback is not initialized"),
+                            invalid("predictive transform callback is not initialised"),
                             record,
                             block,
                             bit,
@@ -800,7 +800,7 @@ pub(crate) fn decode_slice(
                                 },
                                 maximum_width: 8,
                                 fixed_width: 0,
-                                color_long_symbols: false,
+                                colour_long_symbols: false,
                                 width_selector_already_read: false,
                             },
                         )
@@ -1020,7 +1020,7 @@ mod tests {
     #[test]
     fn motion_code_parity_selects_sign() {
         let mut bits = ContextBitReader::new(&[0x26, 0, 0, 0]);
-        assert!(bits.initialize_at_bit(0));
+        assert!(bits.initialise_at_bit(0));
         assert_eq!(read_motion(&mut bits).unwrap(), Motion { x: 16, y: -16 });
     }
 }

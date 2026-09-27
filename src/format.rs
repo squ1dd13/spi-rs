@@ -71,7 +71,7 @@ pub(crate) fn parse_container(input: &[u8]) -> Result<Container<'_>, FormatError
 pub(crate) struct PictureInfo {
     pub width: u16,
     pub height: u16,
-    pub color_mode: u8,
+    pub colour_mode: u8,
     pub selector: u8,
 }
 
@@ -79,7 +79,7 @@ pub(crate) struct PictureInfo {
 #[br(magic = b"\xaa\x01")]
 struct PictureFields {
     _record_word: u32,
-    color_mode: u8,
+    colour_mode: u8,
     _ancillary_a: u16,
     _ancillary_b: u16,
     width: u16,
@@ -99,7 +99,7 @@ pub(crate) fn parse_picture(input: &[u8]) -> Result<PictureInfo, FormatError> {
     Ok(PictureInfo {
         width: fields.width,
         height: fields.height,
-        color_mode: fields.color_mode,
+        colour_mode: fields.colour_mode,
         selector: fields.selector,
     })
 }

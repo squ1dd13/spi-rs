@@ -1,8 +1,8 @@
-//! Predictive color blocks use signed histories and fixed-size reconstruction scratch.
+//! Predictive colour blocks use signed histories and fixed-size reconstruction scratch.
 
 use crate::{
     bits::{BitReader, ContextBitReader},
-    color::{ColorState, allocation, invalid, references},
+    colour::{ColourState, allocation, invalid, references},
     decoder::SliceGeometry,
     entropy::{
         CallbackKind, CoefficientHistory, ComponentRequest, ComponentResult,
@@ -30,7 +30,7 @@ fn low_byte(value: i16) -> u8 {
 pub(super) fn decode_block(
     bits: &mut BitReader<'_>,
     record: &Record<'_>,
-    state: &mut ColorState,
+    state: &mut ColourState,
     output: &mut [Vec<u8>; 3],
     geometry: SliceGeometry,
     block_x: usize,
@@ -41,14 +41,14 @@ pub(super) fn decode_block(
     histories: &mut Option<[CoefficientHistory; 3]>,
 ) -> Result<(), DecodeError> {
     ensure_histories(histories, state.block_width, geometry.block_rows, local_y)?;
-    let histories = histories.as_mut().expect("histories initialized");
+    let histories = histories.as_mut().expect("histories initialised");
     references::update(state, block_x, local_y, global_y)?;
 
     let mut reader = ContextBitReader::new(record.payload);
-    if !reader.initialize_at_bit(bits.bit_position()) {
+    if !reader.initialise_at_bit(bits.bit_position()) {
         return Err(invalid("invalid predictive reader position"));
     }
-    let initialized = reader
+    let initialised = reader
         .read_value(1)
         .ok_or_else(|| invalid("truncated predictive state"))?;
     let luma_subdivided = reader
@@ -71,7 +71,7 @@ pub(super) fn decode_block(
             )?;
             reconstruct_component(
                 &result,
-                initialized == 0,
+                initialised == 0,
                 &state.histories[3],
                 &state.histories[0],
                 0,
@@ -94,7 +94,7 @@ pub(super) fn decode_block(
         )?;
         reconstruct_component(
             &result,
-            initialized == 0,
+            initialised == 0,
             &state.histories[3],
             &state.histories[0],
             0,
@@ -123,7 +123,7 @@ pub(super) fn decode_block(
                 )?;
                 reconstruct_component(
                     &result,
-                    initialized == 0,
+                    initialised == 0,
                     &state.histories[plane + 3],
                     &state.histories[plane],
                     plane,
@@ -146,7 +146,7 @@ pub(super) fn decode_block(
             )?;
             reconstruct_component(
                 &result,
-                initialized == 0,
+                initialised == 0,
                 &state.histories[plane + 3],
                 &state.histories[plane],
                 plane,
@@ -224,8 +224,8 @@ fn ensure_histories(
             .checked_mul(4)
             .and_then(|v| v.checked_add(1))
             .and_then(|v| u16::try_from(v).ok())
-            .ok_or_else(|| allocation("color coefficient history"))?;
-        let rows = u16::try_from(rows).map_err(|_| allocation("color coefficient history"))?;
+            .ok_or_else(|| allocation("colour coefficient history"))?;
+        let rows = u16::try_from(rows).map_err(|_| allocation("colour coefficient history"))?;
         let make = || CoefficientHistory::new(stride, rows).map_err(coefficient_error);
         *histories = Some([make()?, make()?, make()?]);
         for y in 1..=local_y {
@@ -267,7 +267,7 @@ fn decode_component(
                 .map_err(|_| invalid("predictive block offset overflow"))?,
             maximum_width,
             fixed_width,
-            color_long_symbols: true,
+            colour_long_symbols: true,
             width_selector_already_read,
         },
     );
@@ -352,7 +352,7 @@ fn reconstruct_component(
         } else {
             argument
         };
-        construct_color_refs(
+        construct_colour_refs(
             width,
             selector,
             left,
@@ -380,14 +380,14 @@ fn reconstruct_component(
                     (i32::from(pred[i]) + i32::from(residual[slot * width * width + i]))
                         .clamp(0, cap),
                 )
-                .expect("clamped color sample fits i16");
+                .expect("clamped colour sample fits i16");
             }
         }
     }
     Ok(())
 }
 
-fn construct_color_refs(
+fn construct_colour_refs(
     width: usize,
     selector: usize,
     left_bank: &[i16; 33],
@@ -436,12 +436,12 @@ fn construct_color_refs(
                 left[9..17].fill(left_edge);
                 top[9..17].fill(top_edge);
             }
-            _ => return Err(invalid("invalid width-eight color reference selector")),
+            _ => return Err(invalid("invalid width-eight colour reference selector")),
         }
         return Ok(());
     }
     if width != 4 || selector > 15 {
-        return Err(invalid("invalid width-four color reference selector"));
+        return Err(invalid("invalid width-four colour reference selector"));
     }
     let origin = component_y * 16 + component_x;
     let vertical = |count: usize, extend: bool, out: &mut [i16; 33]| -> bool {
@@ -531,7 +531,7 @@ fn construct_color_refs(
     if ok {
         Ok(())
     } else {
-        Err(invalid("color reference is unavailable for constructor"))
+        Err(invalid("colour reference is unavailable for constructor"))
     }
 }
 
@@ -642,7 +642,7 @@ fn predict(
         return predict_signed_angular(l, t, width, direction, out).map_err(prediction_error);
     }
     Err(DecodeError::Syntax(SyntaxError::Invalid {
-        stream: "color",
+        stream: "colour",
         detail: "unsupported signed prediction mode",
     }))
 }

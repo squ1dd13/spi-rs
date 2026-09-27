@@ -1,18 +1,18 @@
-//! Color boundary banks and their signed prediction histories.
+//! Colour boundary banks and their signed prediction histories.
 
 use crate::{
     DecodeError,
-    color::{ColorState, invalid},
+    colour::{ColourState, invalid},
 };
 
 pub(super) fn update(
-    state: &mut ColorState,
+    state: &mut ColourState,
     block_x: usize,
     local_y: usize,
     global_y: usize,
 ) -> Result<(), DecodeError> {
     if block_x >= state.block_width || global_y >= state.total_block_rows {
-        return Err(invalid("color boundary is outside picture"));
+        return Err(invalid("colour boundary is outside picture"));
     }
     refresh(state, block_x, local_y, global_y)?;
     if local_y == 0 {
@@ -65,18 +65,18 @@ pub(super) fn update(
             let middle = b + (delta >> 1);
             let residual = a - middle;
             state.histories[history][i] =
-                i16::try_from(middle + (residual >> 1)).expect("byte color history fits i16");
+                i16::try_from(middle + (residual >> 1)).expect("byte colour history fits i16");
             state.histories[history + 1][i] =
-                i16::try_from(residual + 0x100).expect("byte color history fits i16");
+                i16::try_from(residual + 0x100).expect("byte colour history fits i16");
             state.histories[history + 2][i] =
-                i16::try_from(delta + 0x100).expect("byte color history fits i16");
+                i16::try_from(delta + 0x100).expect("byte colour history fits i16");
         }
     }
     Ok(())
 }
 
 fn refresh(
-    state: &mut ColorState,
+    state: &mut ColourState,
     bx: usize,
     local_y: usize,
     gy: usize,
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn neutral_rgb_banks_map_to_biased_signed_chroma() {
-        let mut state = ColorState::new(1, 2).unwrap();
+        let mut state = ColourState::new(1, 2).unwrap();
         for plane in &mut state.planes {
             plane.fill(128);
         }
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn slice_first_row_uses_unavailable_left_corner() {
-        let mut state = ColorState::new(2, 2).unwrap();
+        let mut state = ColourState::new(2, 2).unwrap();
         for plane in &mut state.planes {
             plane.fill(7);
         }

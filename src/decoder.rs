@@ -2,7 +2,7 @@
 
 use crate::{DecodeError, DecodeLimits, ErrorContext, ImageInfo, error::ParseError, format};
 
-/// Geometry shared by one record's color and alpha streams. Block coordinates
+/// Geometry shared by one record's colour and alpha streams. Block coordinates
 /// use the padded 16-pixel grid; visible dimensions clip the last record.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SliceGeometry {
@@ -74,14 +74,14 @@ fn check_memory(
     )?;
     let padded_width = checked_mul(blocks_x, 16, resource, limit)?;
     let padded_height = checked_mul(blocks_y, 16, resource, limit)?;
-    let color_picture = checked_mul(
+    let colour_picture = checked_mul(
         checked_mul(padded_width, padded_height, resource, limit)?,
         3,
         resource,
         limit,
     )?;
     let slice_height = checked_mul(slice_rows, 16, resource, limit)?;
-    let color_slice = checked_mul(
+    let colour_slice = checked_mul(
         checked_mul(padded_width, slice_height, resource, limit)?,
         3,
         resource,
@@ -121,8 +121,8 @@ fn check_memory(
     )?;
     let total = [
         output,
-        color_picture,
-        color_slice,
+        colour_picture,
+        colour_slice,
         alpha_picture,
         alpha_slice,
         context,
@@ -158,19 +158,19 @@ fn compose_rows(
     output: &mut [u8],
     width: usize,
     geometry: SliceGeometry,
-    color: &crate::color::ColorSlice,
+    colour: &crate::colour::ColourSlice,
     alpha: Option<&crate::alpha::AlphaSlice>,
 ) -> Result<(), DecodeError> {
     let height = geometry.visible_height();
     let padded_width = geometry.block_width * 16;
-    if color.stride < padded_width
-        || color
+    if colour.stride < padded_width
+        || colour
             .planes
             .iter()
-            .any(|plane| plane.len() < color.stride * height)
+            .any(|plane| plane.len() < colour.stride * height)
     {
         return Err(DecodeError::Coverage {
-            detail: "color plane does not cover visible rows",
+            detail: "colour plane does not cover visible rows",
         });
     }
     if let Some(alpha) = alpha {
@@ -182,13 +182,13 @@ fn compose_rows(
     }
     for row in 0..height {
         let output_row = (geometry.pixel_row() + row) * width * 4;
-        let color_row = row * color.stride;
+        let colour_row = row * colour.stride;
         let alpha_row = alpha.map_or(0, |plane| row * plane.stride);
         for x in 0..width {
             let pixel = output_row + x * 4;
-            output[pixel] = color.planes[2][color_row + x];
-            output[pixel + 1] = color.planes[0][color_row + x];
-            output[pixel + 2] = color.planes[1][color_row + x];
+            output[pixel] = colour.planes[2][colour_row + x];
+            output[pixel + 1] = colour.planes[0][colour_row + x];
+            output[pixel + 2] = colour.planes[1][colour_row + x];
             output[pixel + 3] = alpha.map_or(255, |plane| plane.plane[alpha_row + x]);
         }
     }
@@ -210,9 +210,9 @@ pub(crate) fn decode_with_limits(
         format::parse_container(input).map_err(|error| ParseError::Container(Box::new(error)))?;
     let picture = format::parse_picture(container.picture)
         .map_err(|error| ParseError::Picture(Box::new(error)))?;
-    if picture.color_mode != 0 {
-        return Err(DecodeError::UnsupportedColorMode {
-            value: picture.color_mode,
+    if picture.colour_mode != 0 {
+        return Err(DecodeError::UnsupportedColourMode {
+            value: picture.colour_mode,
         });
     }
     if !matches!(picture.selector, 2 | 4 | 5) {
@@ -260,7 +260,7 @@ pub(crate) fn decode_with_limits(
         .try_reserve_exact(output_len)
         .map_err(|_| DecodeError::Allocation { resource: "output" })?;
     output.resize(output_len, 0);
-    let mut color_state = crate::color::ColorState::new(blocks_x, blocks_y)?;
+    let mut colour_state = crate::colour::ColourState::new(blocks_x, blocks_y)?;
     let mut alpha_state = if picture.selector == 2 {
         None
     } else {
@@ -279,7 +279,7 @@ pub(crate) fn decode_with_limits(
         &[
             output.capacity(),
             record_storage,
-            color_state.heap_bytes(),
+            colour_state.heap_bytes(),
             alpha_state_bytes,
         ],
         limits.max_memory_bytes,
@@ -319,21 +319,21 @@ pub(crate) fn decode_with_limits(
                 detail: "slice rows have a gap",
             });
         }
-        let color =
-            crate::color::decode_slice(record, geometry, &mut color_state).map_err(|error| {
+        let colour =
+            crate::colour::decode_slice(record, geometry, &mut colour_state).map_err(|error| {
                 error.at(ErrorContext {
                     record: Some(index),
                     ..ErrorContext::default()
                 })
             })?;
-        log::debug!("record {index}: color endpoint {} bits", color.end_bit);
+        log::debug!("record {index}: colour endpoint {} bits", colour.end_bit);
         let aligned =
-            color
+            colour
                 .end_bit
                 .checked_add(7)
                 .map(|v| v & !7)
                 .ok_or(DecodeError::Coverage {
-                    detail: "color bit position overflows",
+                    detail: "colour bit position overflows",
                 })?;
         let record_bits = record
             .data
@@ -344,12 +344,12 @@ pub(crate) fn decode_with_limits(
             })?;
         if aligned > record_bits {
             return Err(DecodeError::Coverage {
-                detail: "color stream exceeds its record",
+                detail: "colour stream exceeds its record",
             });
         }
         let alpha = if let Some(state) = alpha_state.as_mut() {
             Some(
-                crate::alpha::decode_slice(record, geometry, color.end_bit, state).map_err(
+                crate::alpha::decode_slice(record, geometry, colour.end_bit, state).map_err(
                     |error| {
                         error.at(ErrorContext {
                             record: Some(index),
@@ -365,11 +365,11 @@ pub(crate) fn decode_with_limits(
             &[
                 output.capacity(),
                 record_storage,
-                color_state.heap_bytes(),
+                colour_state.heap_bytes(),
                 alpha_state
                     .as_ref()
                     .map_or(0, crate::alpha::AlphaState::heap_bytes),
-                color.heap_bytes(),
+                colour.heap_bytes(),
                 alpha
                     .as_ref()
                     .map_or(0, crate::alpha::AlphaSlice::heap_bytes),
@@ -388,7 +388,7 @@ pub(crate) fn decode_with_limits(
                 ..ErrorContext::default()
             }));
         }
-        compose_rows(&mut output, width, geometry, &color, alpha.as_ref())?;
+        compose_rows(&mut output, width, geometry, &colour, alpha.as_ref())?;
         covered_rows += geometry.visible_height();
     }
     if covered_rows != height {
@@ -399,7 +399,7 @@ pub(crate) fn decode_with_limits(
     let info = ImageInfo {
         width: u32::from(picture.width),
         height: u32::from(picture.height),
-        color_mode: picture.color_mode,
+        colour_mode: picture.colour_mode,
         selector: picture.selector,
     };
     image::RgbaImage::from_raw(info.width, info.height, output).ok_or(DecodeError::Coverage {
@@ -433,9 +433,9 @@ mod tests {
         input
     }
 
-    fn raw_record(index: u16, color: [u8; 3], alpha: Option<u8>) -> Vec<u8> {
+    fn raw_record(index: u16, colour: [u8; 3], alpha: Option<u8>) -> Vec<u8> {
         let mut body = vec![0x30]; // method 5, then byte alignment
-        for value in color {
+        for value in colour {
             body.extend_from_slice(&[value; 256]);
         }
         if let Some(value) = alpha {

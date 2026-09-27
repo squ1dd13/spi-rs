@@ -51,7 +51,7 @@
 
 mod alpha;
 mod bits;
-mod color;
+mod colour;
 mod decoder;
 mod entropy;
 mod error;
@@ -70,7 +70,7 @@ pub use error::{
 pub struct ImageInfo {
     pub width: u32,
     pub height: u32,
-    pub color_mode: u8,
+    pub colour_mode: u8,
     pub selector: u8,
 }
 
@@ -102,7 +102,7 @@ pub fn read_header(input: &[u8]) -> Result<ImageInfo, DecodeError> {
     Ok(ImageInfo {
         width: u32::from(picture.width),
         height: u32::from(picture.height),
-        color_mode: picture.color_mode,
+        colour_mode: picture.colour_mode,
         selector: picture.selector,
     })
 }

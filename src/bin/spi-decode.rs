@@ -50,10 +50,10 @@ fn run(args: Args) -> Result<(), String> {
     let pixels = decode_with_limits(&input, limits)
         .map_err(|error| format!("cannot decode {}: {error}", args.input.display()))?;
     log::info!(
-        "decoded {}x{} image (color mode {}, selector {})",
+        "decoded {}x{} image (colour mode {}, selector {})",
         header.width,
         header.height,
-        header.color_mode,
+        header.colour_mode,
         header.selector
     );
     pixels

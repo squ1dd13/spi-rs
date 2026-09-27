@@ -66,9 +66,9 @@ pub struct Motion {
     pub y: i32,
 }
 
-/// Copy a color block. Source and destination can be the same buffer. The full
+/// Copy a colour block. Source and destination can be the same buffer. The full
 /// source block is read into fixed scratch before any destination byte changes.
-pub fn copy_color_motion(
+pub fn copy_colour_motion(
     plane: &mut [u8],
     stride: usize,
     width: usize,
@@ -219,7 +219,7 @@ pub fn copy_block16(
 mod tests {
     use super::*;
     #[test]
-    fn overlapping_color_motion_uses_original_source_block() {
+    fn overlapping_colour_motion_uses_original_source_block() {
         let (w, h, s) = (32, 20, 32);
         let mut plane = vec![0_u8; s * h];
         for y in 0..h {
@@ -230,7 +230,7 @@ mod tests {
         let source: Vec<u8> = (0..16)
             .flat_map(|r| (0..16).map(move |c| ((r + 2) * w + c + 2).to_le_bytes()[0]))
             .collect();
-        copy_color_motion(&mut plane, s, w, h, 3, 2, Motion { x: 1, y: 0 }).unwrap();
+        copy_colour_motion(&mut plane, s, w, h, 3, 2, Motion { x: 1, y: 0 }).unwrap();
         for r in 0..16 {
             assert_eq!(
                 &plane[(2 + r) * s + 3..(2 + r) * s + 19],
@@ -239,10 +239,10 @@ mod tests {
         }
     }
     #[test]
-    fn color_motion_checks_visible_rectangle() {
+    fn colour_motion_checks_visible_rectangle() {
         let mut p = vec![0; 32 * 32];
         assert_eq!(
-            copy_color_motion(&mut p, 32, 20, 32, 4, 0, Motion { x: 5, y: 0 }),
+            copy_colour_motion(&mut p, 32, 20, 32, 4, 0, Motion { x: 5, y: 0 }),
             Err(SurfaceError::OutOfBounds)
         );
     }
