@@ -1,10 +1,21 @@
-//! Colour boundary banks and their signed prediction histories.
+//! Prepare colour samples above and to the left of the next block.
+//!
+//! Reference banks include a corner at index 0, immediate neighbours at 1..=16, and extensions at 17..=32. Top banks are `banks[0..3]` and left banks are `banks[4..7]`, in G, B, R order. Slots 3, 7, and 8 do not supply these edges.
+//!
+//! [`update`](fn.update.html) runs before byte residual and predictive methods. It reads persistent picture planes, applies the record-first-row rules or the four-neighbour availability transition, then converts all 33 samples in both orientations to L, U+256, V+256. These transformed values feed predictive colour; byte residuals use the byte top banks. The conversion equations are on the crate page.
+//!
+//! Unavailable extensions are not an instruction to read arbitrary neighbouring storage. [`transition`](fn.transition.html) fills or repeats specific prepared values. Its code has one availability bit in each nibble: above-left at bit 12, above-right at bit 8, above at bit 4, left at bit 0. The rules describe this implementation; no independent specification establishes why each replacement was selected.
 
 use crate::{
     DecodeError,
     colour::{ColourState, invalid},
 };
 
+/// Updates byte and signed colour reference banks for the current block.
+///
+/// The procedure refreshes physical top and left edges from the persistent planes, synthesises unavailable extensions according to the four-neighbour availability code, then converts green-blue-red references into luma-like and biased signed-chroma histories.
+///
+/// Returns invalid colour syntax when the block position lies outside picture history.
 pub(super) fn update(
     state: &mut ColourState,
     block_x: usize,
@@ -75,6 +86,9 @@ pub(super) fn update(
     Ok(())
 }
 
+/// Loads available top and left samples from the reconstructed picture planes.
+///
+/// On the first local row, this helper leaves top banks unchanged; `update` subsequently replaces them with 128 or left-derived values. The first column sets left neighbours to 128. Left corner is 128 on the first local row or first column. Later rows load top neighbours and clamp their extensions to padded width.
 fn refresh(state: &mut ColourState, block_x: usize, local_y: usize, global_y: usize) {
     let x = block_x * 16;
     let y = global_y * 16;
@@ -108,6 +122,9 @@ fn refresh(state: &mut ColourState, block_x: usize, local_y: usize, global_y: us
     }
 }
 
+/// Extends or neutralises edge banks from a neighbour-availability code.
+///
+/// The four nibbles represent above-left, above-right, above, and left availability. Each listed combination applies the implemented fill or corner average; unrecognised codes leave refreshed samples unchanged.
 fn transition(code: u16, top: &mut [u8; 33], left: &mut [u8; 33]) {
     let t = *top;
     let l = *left;

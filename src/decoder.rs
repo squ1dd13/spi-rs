@@ -1,30 +1,53 @@
-//! Picture sequencing, resource accounting, and output composition.
+//! Turn a framed container into visible RGBA pixels.
+//!
+//! The decoder first checks the input limit, parses headers and record views, and accepts only the implemented colour mode and selectors. It then derives a padded grid of 16 by 16 blocks. For `By` block rows and `N` records, each record has nominal span `ceil(By/N)` rows. No slice-height field is read. [`RecordDecodeContext::record_geometry`] checks consecutive indices and clips the final span; a record start outside the grid is invalid.
+//!
+//! Colour and optional alpha state are allocated once for the picture. Each record decoder creates temporary padded planes. Colour returns a complete-record bit endpoint; alpha starts at its next byte boundary. Only after both streams and the endpoint checks succeed does [`compose_rows`] copy visible samples to output in R, G, B, A order. Selector 2 supplies alpha 255. Output is straight alpha and preserves RGB at alpha zero.
+//!
+//! Resource checks combine an initial estimate with later allocation-capacity checks. They are implementation limits, not limits established for the SPI format. The coefficient Boolean-history account has a documented discrepancy in [`crate::entropy::CoefficientHistory::heap_bytes`]. Internal operations can mutate state before an error; the public call returns no partial image.
+//!
+//! The crate page explains the full data flow and has the picture geometry and state-lifetime tables. To change a stage, start with [`decode_with_limits`], then follow [`RecordDecodeContext::decode_records`] to the colour or alpha dispatcher.
 
 use crate::{DecodeError, DecodeLimits, ErrorContext, ImageInfo, error::ParseError, format};
 
-/// Geometry shared by one record's colour and alpha streams. Block coordinates
-/// use the padded 16-pixel grid; visible dimensions clip the last record.
+/// Describes the block grid and visible bounds of one record slice.
+///
+/// Block coordinates use the padded 16-pixel grid. Visible dimensions clip the rightmost blocks and the final record to the picture rectangle.
 #[derive(Debug, Clone, Copy)]
 pub struct SliceGeometry {
+    /// The padded picture width in 16-pixel blocks.
     pub block_width: usize,
+    /// The number of block rows coded by this slice.
     pub block_rows: usize,
+    /// The slice's first block row in the full picture.
     pub absolute_block_row: usize,
+    /// The visible picture width in pixels.
     pub picture_width: usize,
+    /// The visible picture height in pixels.
     pub picture_height: usize,
 }
 
 impl SliceGeometry {
+    /// Returns the number of visible pixel rows in this slice.
+    ///
+    /// The result clips the padded slice height against the remaining picture height. It is zero if the slice starts below the visible picture.
     pub(crate) fn visible_height(self) -> usize {
         self.picture_height
             .saturating_sub(self.absolute_block_row * 16)
             .min(self.block_rows * 16)
     }
 
+    /// Returns the slice's first pixel row in the full picture.
+    ///
+    /// The caller constructs valid geometry from 16-bit picture dimensions, so multiplication by the fixed block size cannot overflow in decoder use.
     pub(crate) fn pixel_row(self) -> usize {
         self.absolute_block_row * 16
     }
 }
 
+/// Multiplies two resource sizes and maps overflow to a limit error.
+///
+/// The error uses `usize::MAX` as the requested value because the mathematical result cannot be represented. `resource` and `limit` are copied into the diagnostic.
 fn checked_mul(
     a: usize,
     b: usize,
@@ -39,6 +62,9 @@ fn checked_mul(
     Ok(result)
 }
 
+/// Adds two resource sizes and maps overflow to a limit error.
+///
+/// The error uses `usize::MAX` as the requested value because the mathematical result cannot be represented. This helper does not itself compare a representable sum with `limit`.
 fn checked_add(
     a: usize,
     b: usize,
@@ -52,9 +78,11 @@ fn checked_add(
     })
 }
 
-/// Checks a conservative upper bound before any large decoder allocation. The
-/// block allowance covers reference banks, availability masks, and coefficient
-/// contexts in addition to the explicitly sized output and plane buffers.
+/// Checks an initial memory estimate before picture-plane allocation.
+///
+/// The account includes RGBA output, padded current-picture colour and alpha planes, one colour and alpha slice, a fixed 4096-byte allowance for each block's contexts, and record descriptors. The block allowance covers reference banks, availability masks, and coefficient contexts that do not have a single direct allocation here.
+///
+/// Record descriptors have already been allocated. Palette growth receives separate live-capacity checks; the estimate is not an exact live-allocation bound. The returned value is the exact RGBA output length. Arithmetic overflow and a total above `limit` produce [`DecodeError::ResourceLimit`].
 fn check_memory(
     dimensions: (usize, usize),
     blocks_x: usize,
@@ -140,6 +168,9 @@ fn check_memory(
     Ok(output)
 }
 
+/// Checks the capacities of allocations that are live at the same time.
+///
+/// Each entry in `parts` is an allocation capacity in bytes. The function returns their sum when it is representable and within `limit`; otherwise it returns a decoder-memory resource-limit error.
 fn check_live_memory(parts: &[usize], limit: usize) -> Result<usize, DecodeError> {
     let total = parts.iter().try_fold(0_usize, |sum, part| {
         checked_add(sum, *part, "decoder memory", limit)
@@ -154,6 +185,11 @@ fn check_live_memory(parts: &[usize], limit: usize) -> Result<usize, DecodeError
     Ok(total)
 }
 
+/// Composes one decoded slice into the final RGBA output buffer.
+///
+/// SPI colour planes are ordered green, blue, red, so this procedure rearranges them to red, green, blue. It uses opaque alpha when the picture has no alpha stream and clips padded rows and columns to visible dimensions.
+///
+/// Returns [`DecodeError::Coverage`] if a colour or alpha slice is too small for the requested visible rectangle. The caller's resource and geometry checks guarantee that output indexing is in bounds.
 fn compose_rows(
     output: &mut [u8],
     width: usize,
@@ -196,20 +232,38 @@ fn compose_rows(
     Ok(())
 }
 
+/// Mutable picture state while records are decoded in sequence.
+///
+/// Colour and alpha reference state spans records. The context also retains allocation capacities so each temporary slice can be checked against the live-memory limit.
 struct RecordDecodeContext<'data> {
+    /// Receives tightly packed RGBA output pixels.
     output: &'data mut Vec<u8>,
+    /// Retains colour planes and reference banks across slices.
     colour_state: &'data mut crate::colour::ColourState,
+    /// Retains optional alpha history across slices.
     alpha_state: &'data mut Option<crate::alpha::AlphaState>,
+    /// The visible picture width in pixels.
     width: usize,
+    /// The visible picture height in pixels.
     height: usize,
+    /// The padded picture width in blocks.
     blocks_x: usize,
+    /// The padded picture height in blocks.
     blocks_y: usize,
+    /// The nominal block-row count per record.
     slice_rows: usize,
+    /// Accounts for the capacity of the parsed record vector.
     record_storage: usize,
+    /// The maximum live decoder allocation in bytes.
     memory_limit: usize,
 }
 
 impl RecordDecodeContext<'_> {
+    /// Validates a record index and derives that record's slice geometry.
+    ///
+    /// Record `index` determines the absolute block-row origin from the fixed nominal slice span. The final slice is clipped to the padded picture height. `covered_rows` must equal the resulting visible pixel origin, which detects gaps in record coverage.
+    ///
+    /// Returns a contextual [`DecodeError::Coverage`] when indices are not consecutive, the origin overflows or exceeds the picture, or visible rows do not join exactly.
     fn record_geometry(
         &self,
         record: &format::Record<'_>,
@@ -254,6 +308,11 @@ impl RecordDecodeContext<'_> {
         Ok(geometry)
     }
 
+    /// Decodes all records and composes their visible rows in sequence.
+    ///
+    /// For each record, this procedure validates geometry, accounts for live storage, decodes the colour stream, byte-aligns its endpoint, decodes optional alpha, rejects unused complete bytes, and writes RGBA rows. It then verifies that the records cover the visible height exactly.
+    ///
+    /// Errors from a component decoder receive the current zero-based record context. A final partial byte is permitted because codec syntax is bit-packed, but one or more complete unused bytes are rejected.
     fn decode_records(&mut self, records: &[format::Record<'_>]) -> Result<(), DecodeError> {
         let mut covered_rows = 0_usize;
         for (index, record) in records.iter().enumerate() {
@@ -355,6 +414,9 @@ impl RecordDecodeContext<'_> {
     }
 }
 
+/// Validates that the picture uses a decoder-supported mode and selector.
+///
+/// Colour mode 0 is currently the only supported mode. Selectors 2, 4, and 5 are accepted; selector 2 omits alpha, while 4 and 5 carry an alpha stream.
 fn validate_decode_picture(picture: format::PictureInfo) -> Result<(), DecodeError> {
     if picture.colour_mode != 0 {
         return Err(DecodeError::UnsupportedColourMode {
@@ -369,6 +431,11 @@ fn validate_decode_picture(picture: format::PictureInfo) -> Result<(), DecodeErr
     Ok(())
 }
 
+/// Decodes a complete SPI container under explicit resource limits.
+///
+/// This implementation parses record descriptors without copying record data, derives a 16-pixel block grid, allocates persistent prediction state, and reconstructs each horizontal record slice. Colour plane order is converted from green-blue-red to RGBA at composition time.
+///
+/// Record count is bounded by the number of block rows. Empty record sections, non-consecutive indices, missing picture rows, extra record syntax, unsupported picture forms, and breached resource limits are rejected with typed [`DecodeError`] values.
 pub fn decode_with_limits(
     input: &[u8],
     limits: DecodeLimits,

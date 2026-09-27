@@ -1,8 +1,18 @@
-//! Colour block decoding and picture-wide colour history.
+//! Reconstruct the green, blue, and red byte planes for a record.
+//!
+//! Each record covers a horizontal slice of the padded 16 by 16 block grid. [`decode_slice`] reads one method per block in row order and returns three temporary planes plus a bit endpoint. The endpoint includes the record headers and locates the optional alpha stream. [`crate::decoder`] clips these planes to visible dimensions and changes G, B, R storage order to R, G, B output order.
+//!
+//! Methods can copy current-picture storage, decode byte runs, reconstruct predicted components, expand a palette, or read raw bytes. Prediction estimates samples from prepared top and left edges. Colour method 3 adds inverse-transformed residuals to those estimates in a transformed component representation, then converts back to byte planes.
+//!
+//! [`ColourState`] retains picture samples and edge banks across records. Palettes and coefficient-mode histories are local to one record. Edges are prepared before residual and predictive blocks, not after every block. Record-first-row preparation replaces the physical top reference even when a preceding record exists. The crate page contains the method mapping, conversion equations, and state-lifetime table; the submodules give the local storage and mutation contracts.
 
+/// Decodes block method syntax and dispatches colour reconstruction.
 mod blocks;
+/// Stores reconstructed colour planes and picture-wide reference history.
 mod history;
+/// Decodes transform-based predictive colour blocks.
 mod predictive;
+/// Prepares edge banks before residual and predictive colour blocks.
 mod references;
 
 use crate::{
@@ -14,31 +24,53 @@ use crate::{
 
 pub use history::ColourState;
 
+/// The three decoded colour planes for one record slice.
+///
+/// Planes use SPI order: green, blue, then red. Each plane includes right-edge padding to a 16-pixel block boundary and has `stride * geometry.block_rows * 16` samples.
 #[derive(Debug)]
 pub struct ColourSlice {
+    /// Green, blue, and red samples in separate row-major planes.
     pub planes: [Vec<u8>; 3],
+    /// The number of samples between rows in each plane.
     pub stride: usize,
+    /// The first bit after colour syntax, relative to the complete record.
     pub end_bit: usize,
 }
 
 impl ColourSlice {
+    /// Returns the allocated byte capacity of all three slice planes.
+    ///
+    /// `u8` has a size of one byte, so the sum of vector capacities is the memory-accounting value directly.
     pub(crate) fn heap_bytes(&self) -> usize {
         self.planes.iter().map(Vec::capacity).sum()
     }
 }
 
+/// Locates one colour block in both slice-local and picture-global coordinates.
+///
+/// Blocks are visited in row-major order. `local_y` addresses the temporary slice planes, while `global_y` addresses persistent picture history.
 #[derive(Clone, Copy)]
 pub struct BlockPosition {
+    /// The containing slice and picture geometry.
     pub geometry: SliceGeometry,
+    /// The block column in the padded picture grid.
     pub x: usize,
+    /// The block row relative to the current slice.
     pub local_y: usize,
+    /// The block row relative to the full picture.
     pub global_y: usize,
 }
 
+/// Tracks live allocations while a colour slice is decoded.
+///
+/// Palette capacity changes during decoding, so budget values are copied with an updated capacity before each check.
 #[derive(Clone, Copy)]
 pub struct ColourMemoryBudget {
+    /// Live bytes owned outside the current colour decoder.
     pub base_live_bytes: usize,
+    /// The maximum permitted total live bytes.
     pub limit: usize,
+    /// Bytes reserved by the current palette vector.
     pub palette_capacity: usize,
 }
 
@@ -50,6 +82,9 @@ impl ColourMemoryBudget {
         palette_capacity: 0,
     };
 
+    /// Returns this budget with a replacement palette capacity.
+    ///
+    /// Other account values remain unchanged. `Vec<u8>` capacity is already measured in bytes.
     pub fn with_palette_capacity(self, palette_capacity: usize) -> Self {
         Self {
             palette_capacity,
@@ -57,6 +92,9 @@ impl ColourMemoryBudget {
         }
     }
 
+    /// Checks current plane, coefficient-history, and palette capacities.
+    ///
+    /// This is equivalent to [`ColourMemoryBudget::check_with_additional`] with no prospective allocation.
     pub fn check(
         self,
         planes: &[Vec<u8>; 3],
@@ -65,6 +103,9 @@ impl ColourMemoryBudget {
         self.check_with_additional(planes, histories, 0)
     }
 
+    /// Checks live colour storage plus a prospective byte allocation.
+    ///
+    /// The account starts with `base_live_bytes`, adds all vector capacities and coefficient-history heap use, then adds palette capacity and `additional`. Overflow and totals above `limit` return [`DecodeError::ResourceLimit`].
     pub fn check_with_additional(
         self,
         planes: &[Vec<u8>; 3],
@@ -104,6 +145,11 @@ impl ColourMemoryBudget {
     }
 }
 
+/// Decodes the colour stream of one record slice.
+///
+/// Blocks are processed in row-major order and update `state`, which persists across record slices. The result retains padded planes and a record-relative bit endpoint for locating optional alpha syntax.
+///
+/// Returns [`DecodeError`] for invalid block syntax or geometry, out-of-range copy sources or invalid prediction references, coefficient failures, allocation failures, or a memory-budget violation.
 pub fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
@@ -113,10 +159,16 @@ pub fn decode_slice(
     blocks::decode_slice(record, geometry, state, budget)
 }
 
+/// Creates a decoder allocation error for a named colour resource.
+///
+/// Colour allocation sites use this helper to keep public error classification consistent.
 fn allocation(resource: &'static str) -> DecodeError {
     DecodeError::Allocation { resource }
 }
 
+/// Creates a malformed-colour-syntax error with a static detail.
+///
+/// Positional record and block context is added by the calling decode layer.
 fn invalid(detail: &'static str) -> DecodeError {
     DecodeError::Syntax(SyntaxError::Invalid {
         stream: "colour",
@@ -211,7 +263,6 @@ mod tests {
     #[test]
     fn residual_block_decodes_rle_and_signed_delta() {
         // Method 2 is followed by a zero prediction flag and three zero RLE planes.
-        // This case checks the raw (non-predicted) residual plane path.
         let mut encoded = Vec::new();
         push_bits(&mut encoded, 0, 5); // residual method and prediction flag
         for _ in 0..3 {
@@ -239,7 +290,6 @@ mod tests {
     #[test]
     fn palette_single_colour_expands_to_all_samples() {
         // Palette method 4 is 00 10, followed by marker 1, variant 0,
-        // prefix width 0, then one RGB triplet.
         // 0010 method, then palette marker/variant/prefix, then packed colours.
         let data = record_data(&[0b0010_1000, 0x08, 0xd1, 0x59, 0xc0]);
         let record = view(&data);

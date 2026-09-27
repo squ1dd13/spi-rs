@@ -1,3 +1,11 @@
+//! Read colour methods and reconstruct one record's block grid.
+//!
+//! The ordinary bit cursor starts at payload bit zero. Method prefixes select a copy, byte residuals, predictive coefficients, a palette, or raw planes. Every successful block writes 256 samples to each of the G, B, R planes in temporary record storage and persistent picture storage. [`decode_slice`] adds the record header offset to the final cursor.
+//!
+//! The palette starts empty for each record and can be reused by later palette blocks in that record. Coefficient-mode history is allocated on the first predictive block and reset at record end. Persistent reference banks are prepared by residual and predictive methods only. The availability flag is set after a method is read, before its reconstruction; it is not a transaction marker and is not checked by motion copying.
+//!
+//! The crate page's “Block methods” section gives the encoded mapping and byte residual arithmetic. This module owns the method dispatch and ordinary/contextual reader hand-off; [`predictive`](../predictive/index.html) owns coefficient reconstruction.
+
 use super::{predictive, references};
 use crate::{
     bits::{BitReader, ContextBitReader},
@@ -9,13 +17,25 @@ use crate::{
     surface::{Motion, copy_colour_motion},
 };
 
+/// Retains the palette coding state shared by consecutive colour blocks.
+///
+/// A non-zero prefix gives the bit width of contextual palette indices. Palette bytes are interleaved in green-blue-red order and can be replaced, extended, or reused by later palette blocks.
 struct Palette {
+    /// The number of complete three-byte entries.
     entries: usize,
+    /// The contextual index width, or zero for a single entry.
     prefix: u32,
+    /// Interleaved green-blue-red palette entries.
     bytes: Vec<u8>,
+    /// Tracks this vector's capacity against the live-memory limit.
     budget: ColourMemoryBudget,
 }
 
+/// Decodes all colour blocks in one record slice.
+///
+/// This validates geometry, allocates three padded slice planes, and visits blocks in row-major order. Palette state and lazily allocated coefficient histories are shared within the slice, while reconstructed samples are also committed to picture-wide `state`.
+///
+/// The returned endpoint includes the 14-byte record framing and syntax headers. Invalid syntax, references, allocations, or memory use return [`DecodeError`].
 pub(super) fn decode_slice(
     record: &Record<'_>,
     geometry: SliceGeometry,
@@ -103,6 +123,11 @@ pub(super) fn decode_slice(
     })
 }
 
+/// Decodes and commits one colour block selected by its method prefix.
+///
+/// Method 0 spatially copies, 1 motion-copies, 2 decodes byte residuals, 3 uses transform prediction, 4 expands a palette, and 5 reads raw planar samples. The block becomes available before reconstruction so method-specific validation determines whether its references are legal.
+///
+/// Any failure is wrapped with record-relative bit position and record-local block number.
 fn decode_colour_block(
     bits: &mut BitReader<'_>,
     record: &Record<'_>,
@@ -173,6 +198,9 @@ fn decode_colour_block(
     Ok(())
 }
 
+/// Attaches colour block and bit positions to a decoder error.
+///
+/// The record index comes from the parsed syntax header. Component context remains absent until a component decoder adds it.
 fn at_block(error: DecodeError, record: &Record<'_>, block: usize, bit: usize) -> DecodeError {
     error.at(crate::ErrorContext {
         record: Some(record.index as usize),
@@ -182,6 +210,9 @@ fn at_block(error: DecodeError, record: &Record<'_>, block: usize, bit: usize) -
     })
 }
 
+/// Validates slice geometry against persistent colour history.
+///
+/// The block width and derived stride must match the picture, and the non-empty row range must fit inside persistent history. Invalid values become colour syntax errors.
 fn validate_geometry(geometry: SliceGeometry, state: &ColourState) -> Result<(), DecodeError> {
     if geometry.block_width != state.block_width
         || geometry.block_rows == 0
@@ -202,6 +233,9 @@ fn validate_geometry(geometry: SliceGeometry, state: &ColourState) -> Result<(),
     Ok(())
 }
 
+/// Reads the variable-length colour block method code.
+///
+/// Prefix `1` selects method 0, `01` selects method 1, and `00xx` selects methods 2 through 5. Truncated prefixes return invalid colour syntax.
 fn read_method(bits: &mut BitReader<'_>) -> Result<u8, DecodeError> {
     let first = bits
         .read_bit()
@@ -221,6 +255,9 @@ fn read_method(bits: &mut BitReader<'_>) -> Result<u8, DecodeError> {
         + 2)
 }
 
+/// Reads a one-terminated unary value below `limit`.
+///
+/// The return value is the number of leading zero bits. Truncation or a prefix without a terminating one within the limit is invalid colour syntax.
 fn read_unary(bits: &mut BitReader<'_>, limit: u32) -> Result<u32, DecodeError> {
     for n in 0..limit {
         if bits
@@ -234,6 +271,9 @@ fn read_unary(bits: &mut BitReader<'_>, limit: u32) -> Result<u32, DecodeError> 
     Err(invalid("unary code exceeds limit"))
 }
 
+/// Reads a colour motion vector and returns displacement in samples.
+///
+/// A leading one abbreviates `(0, 16)`. Otherwise, each component is an Exp-Golomb-like magnitude whose low code bit selects sign, then is multiplied by 16. Excessive or truncated codes are rejected.
 fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
     if bits
         .read_bit()
@@ -270,6 +310,9 @@ fn read_motion(bits: &mut BitReader<'_>) -> Result<(i32, i32), DecodeError> {
     Ok((result[0], result[1]))
 }
 
+/// Reads one byte-aligned raw green-blue-red colour block.
+///
+/// Padding advances to the next byte boundary without requiring zero bits. Exactly 256 bytes are read for each plane and committed only after the complete block is available, so truncation cannot partially update sample planes; the outer caller has already set availability.
 fn raw(
     bits: &mut BitReader<'_>,
     state: &mut ColourState,
@@ -293,6 +336,9 @@ fn raw(
     Ok(())
 }
 
+/// Decodes three run-length-coded residual planes.
+///
+/// A zero prediction flag enables vertical delta reconstruction. Each signed folded residual is multiplied by four, added to the top reference or previous output row, adjusted once by subtracting 260 above 257 or adding 260 below -2, then clipped to a byte. A set flag leaves decoded bytes as direct samples.
 fn residual(
     bits: &mut BitReader<'_>,
     state: &mut ColourState,
@@ -333,6 +379,11 @@ fn residual(
     Ok(())
 }
 
+/// Reads or reuses the palette definition for a palette block.
+///
+/// A zero marker continues the active palette with a non-zero prefix. A set marker carries a replacement or extension variant and a four-bit index prefix. Prefix zero defines one green-blue-red entry; otherwise the prefix encodes the entry count field width.
+///
+/// Continuation without active state, truncated fields, size overflow, allocation failure, and memory-budget violations return [`DecodeError`].
 fn read_palette(
     bits: &mut BitReader<'_>,
     palette: &mut Palette,
@@ -403,6 +454,9 @@ fn read_palette(
     Ok(())
 }
 
+/// Reserves palette bytes while enforcing the live-memory budget.
+///
+/// The prospective required capacity is checked before allocation and the allocator's actual capacity is checked afterwards. This handles allocators that reserve more than requested.
 fn reserve_palette(
     palette: &mut Palette,
     additional: usize,
@@ -428,6 +482,11 @@ fn reserve_palette(
     palette.budget.check(planes, histories)
 }
 
+/// Expands one palette-coded block into three sample planes.
+///
+/// A zero-prefix palette fills every sample directly. For a non-zero prefix, the decoder uses the contextual reader at the ordinary cursor, decodes 256 indices, advances the ordinary cursor to the same endpoint, validates each index, and expands interleaved entries. A non-zero prefix can describe one entry and still carries coded indices.
+///
+/// Contextual entropy failures include their record-relative bit position. Invalid initial lookahead, out-of-range indices, or desynchronised endpoints are rejected.
 fn palette_block(
     bits: &mut BitReader<'_>,
     record: &Record<'_>,
@@ -481,6 +540,9 @@ fn palette_block(
     Ok(())
 }
 
+/// Copies the default neighbouring colour block into the current position.
+///
+/// Blocks in the first column copy from the block above; all other blocks copy from the block to the left. The shared motion-copy path validates that the selected source exists.
 fn spatial_copy(
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
@@ -490,6 +552,9 @@ fn spatial_copy(
     motion_copy(state, out, position, Motion { x: dx, y: dy })
 }
 
+/// Copies a motion-referenced block from persistent picture history.
+///
+/// The same vector is applied to all three colour planes. Reconstructed samples are read back into scratch and then written to both the slice output and persistent state so reference-bank updates see one consistent block.
 fn motion_copy(
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],
@@ -520,6 +585,9 @@ fn motion_copy(
     Ok(())
 }
 
+/// Writes one reconstructed colour block to slice and picture planes.
+///
+/// `position` and allocation checks performed by the slice decoder guarantee all 16 by 16 destinations are in bounds. Plane order remains green, blue, red.
 fn write_block(
     state: &mut ColourState,
     out: &mut [Vec<u8>; 3],

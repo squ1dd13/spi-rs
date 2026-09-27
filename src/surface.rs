@@ -1,29 +1,52 @@
-//! Checked plane access and 16 by 16 motion copies.
+//! Copy sample blocks within and between strided planes.
+//!
+//! A plane stores one component, with row starts separated by `stride` samples. A motion vector is a displacement subtracted from the destination to locate the source. The caller supplies current-picture storage; these helpers do not select an earlier frame or check whether a source has been decoded.
+//!
+//! Colour uses two-dimensional rectangle bounds. Production callers pass the padded picture width and height. Alpha uses a linear source address, so a source row can cross the storage row boundary if the full access remains inside the allocation. Keep these rules separate when changing address checks.
+//!
+//! Each helper validates its geometry before writing and reads the full 16 by 16 source into temporary storage. Overlapping copies therefore use the original source values throughout. [`copy_block16`] transfers a block between planes with separate strides. The crate page's copy-method explanation connects these operations to encoded displacement units.
 
+/// Invalid geometry or access for a decoded sample plane.
+///
+/// Surface operations validate both logical rectangles and their backing slice lengths before copying any destination samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SurfaceError {
+    /// Zero, inconsistent, or overflowing plane dimensions.
     #[error("invalid plane dimensions")]
     InvalidDimensions,
+    /// A requested source or destination rectangle leaves the plane.
     #[error("plane access is out of bounds")]
     OutOfBounds,
+    /// A backing slice does not cover its declared dimensions.
     #[error("plane buffer is too small")]
     BufferTooSmall,
 }
 
+/// Calculates the backing length for a strided plane.
+///
+/// Multiplication overflow is reported as [`SurfaceError::InvalidDimensions`].
 fn required_len(stride: usize, height: usize) -> Result<usize, SurfaceError> {
     stride
         .checked_mul(height)
         .ok_or(SurfaceError::InvalidDimensions)
 }
 
+/// A whole-sample motion displacement.
+///
+/// Copy procedures subtract this vector from the destination to locate the source. Colour vectors address two-dimensional plane coordinates; alpha vectors use its padded linear layout.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Motion {
+    /// The horizontal displacement in samples.
     pub x: i32,
+    /// The vertical displacement in samples.
     pub y: i32,
 }
 
-/// Copy a colour block. Source and destination can be the same buffer. The full
-/// source block is read into fixed scratch before any destination byte changes.
+/// Copies one motion-referenced colour block within a plane.
+///
+/// Source and destination rectangles are 16 by 16 pixels and must remain inside the explicit `width` and `height` (padded picture dimensions in production). The source is at destination minus `motion`. Source and destination can overlap because the full source block is read into fixed scratch before any destination byte changes.
+///
+/// Returns [`SurfaceError`] for invalid dimensions, a short plane buffer, or an out-of-bounds rectangle. It does not change the plane on validation failure.
 pub fn copy_colour_motion(
     plane: &mut [u8],
     stride: usize,
@@ -74,9 +97,11 @@ pub fn copy_colour_motion(
     Ok(())
 }
 
-/// Copy alpha motion through the padded linear layout used by the decoder.
-/// Motion is measured as a linear offset: `dy * stride + dx`; a source row
-/// may therefore cross the visible width while remaining inside row padding.
+/// Copies one motion-referenced alpha block through the padded linear layout.
+///
+/// Motion is measured as the linear offset `y * stride + x`. A 16-sample source row can therefore cross a visible-width boundary while remaining inside the allocated row padding, as implemented by the alpha decoder. Scratch storage makes overlapping copies stable.
+///
+/// Returns [`SurfaceError`] for invalid dimensions, a short plane buffer, or a source or destination outside the padded allocation.
 pub fn copy_alpha_motion(
     plane: &mut [u8],
     stride: usize,
@@ -125,7 +150,11 @@ pub fn copy_alpha_motion(
     Ok(())
 }
 
-/// Copy positioned 16 by 16 bytes between planes with independent strides.
+/// Copies a positioned 16 by 16 block between independently strided planes.
+///
+/// Both horizontal rectangles must fit within their stride, and each backing slice must contain all rows through the block bottom. Fixed scratch permits the slices to represent overlapping logical storage if a caller arranges that safely.
+///
+/// Returns [`SurfaceError`] before writing when dimensions, positions, or backing lengths are invalid.
 pub fn copy_block16(
     source: &[u8],
     source_stride: usize,

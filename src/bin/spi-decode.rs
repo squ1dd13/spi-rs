@@ -1,8 +1,10 @@
-//! Decode one SPI image and save its pixels as PNG.
+//! Read one complete SPI container and write its visible pixels as PNG.
 //!
-//! The input is read as a complete file. `--max-input-bytes` and
-//! `--max-memory-bytes` set the decoder limits. Existing output files require
-//! `--force`.
+//! Run `spi-decode INPUT OUTPUT` to decode a file. `--max-input-bytes` and `--max-memory-bytes` use the same defaults as the library. The input reader checks metadata and also limits bytes read, so a growing file cannot bypass the input bound. PNG encoding is outside the decoder memory account.
+//!
+//! The output is first written to a temporary file in the output directory. Without `--force`, publication fails if the destination exists, including a file created after encoding started. With `--force`, publication replaces it. Decode and I/O errors return status 1; Clap retains status 2 for argument errors. RGB values are preserved under zero alpha.
+
+#![warn(missing_docs, clippy::missing_docs_in_private_items)]
 
 use std::{
     fs::File,
@@ -16,6 +18,9 @@ use spi::{DecodeLimits, decode_with_limits, read_header};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Decode an SPI image to PNG")]
+/// Command-line paths, overwrite policy, and decoder limits.
+///
+/// Clap derives validation and help text from this structure. Byte limits use the same defaults as [`DecodeLimits::default`].
 struct Args {
     /// Input SPI file.
     input: PathBuf,
@@ -32,6 +37,9 @@ struct Args {
     max_memory_bytes: usize,
 }
 
+/// Reads a complete SPI file without exceeding the input limit.
+///
+/// File metadata provides an early size check. The bounded reader still takes at most `max_input_bytes + 1` bytes so growing files and inaccurate metadata cannot bypass the limit. I/O and limit failures are converted to path-aware user messages.
 fn read_input(path: &Path, max_input_bytes: usize) -> Result<Vec<u8>, String> {
     let file =
         File::open(path).map_err(|error| format!("cannot open {}: {error}", path.display()))?;
@@ -59,6 +67,9 @@ fn read_input(path: &Path, max_input_bytes: usize) -> Result<Vec<u8>, String> {
     Ok(input)
 }
 
+/// Publishes a staged PNG at its final path.
+///
+/// Without `force`, the no-clobber persist operation fails atomically if the target exists. With `force`, the platform's temporary-file persistence replaces the target. Failures become user-facing messages and preserve the temporary file until this function returns.
 fn publish_png(staged: tempfile::NamedTempFile, output: &Path, force: bool) -> Result<(), String> {
     let result = if force {
         staged.persist(output)
@@ -77,6 +88,9 @@ fn publish_png(staged: tempfile::NamedTempFile, output: &Path, force: bool) -> R
     })
 }
 
+/// Encodes pixels to a staged PNG and publishes it atomically.
+///
+/// The temporary file is created in the output directory so publication does not cross file systems. Encoding and buffered writes complete before [`publish_png`] applies the requested overwrite policy.
 fn save_png(pixels: &image::RgbaImage, output: &Path, force: bool) -> Result<(), String> {
     let parent = output
         .parent()
@@ -96,6 +110,9 @@ fn save_png(pixels: &image::RgbaImage, output: &Path, force: bool) -> Result<(),
     publish_png(staged, output, force)
 }
 
+/// Reads, inspects, decodes, and saves one command-line input.
+///
+/// The same input limit applies during file reading and decoder validation. Header inspection supplies the informational log, while decode and PNG failures receive source or destination path context.
 fn run(args: &Args) -> Result<(), String> {
     let input = read_input(&args.input, args.max_input_bytes)?;
     let limits = DecodeLimits {
