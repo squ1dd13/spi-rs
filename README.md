@@ -19,7 +19,7 @@ The function of interest from the libraries is `read_maetel_argb`, so I set up a
 with information about the format and libraries that I had found through manual reverse engineering
 (locations of functions, structures I'd reconstituted, etc.) and details of the tools available on
 the system. I then used OpenAI's Codex, mostly with GPT-5.6 Luna (but occasionally 5.6 Sol, for
-parts that were trickier) to turn `fake_read_maetel_argb` into a full decoder. The main tools the
+parts that were trickier), to turn `fake_read_maetel_argb` into a full decoder. The main tools the
 agents used were [radare2](https://github.com/radareorg/radare2) for static analysis and GDB for
 dynamic analysis of `read_maetel_argb` (and for debugging `fake_read_maetel_argb`).
 
