@@ -752,6 +752,14 @@ impl Default for DecodeLimits {
     }
 }
 
+impl DecodeLimits {
+    /// Unlimited input size and decoder memory usage (up to `usize::MAX`).
+    pub const MAX: Self = DecodeLimits {
+        max_input_bytes: usize::MAX,
+        max_memory_bytes: usize::MAX,
+    };
+}
+
 /// Inspects the framed container and picture header without decoding records.
 ///
 /// This function validates both outer section lengths, rejects trailing container bytes, checks
